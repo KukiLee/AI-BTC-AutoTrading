@@ -6,12 +6,12 @@ import asyncio
 import hashlib
 import json
 
-from config import ExecutionMode, settings
-from data.market_data import fetch_multi_timeframe_data
-from data.news_data import fetch_recent_headlines
-from execution.exchange import BinanceFuturesAdapter
-from execution.order_manager import place_market_order_with_sl_tp
-from execution.position_guard import (
+from .config import ExecutionMode, settings
+from .data.market_data import fetch_multi_timeframe_data
+from .data.news_data import fetch_recent_headlines
+from .execution.exchange import BinanceFuturesAdapter
+from .execution.order_manager import place_market_order_with_sl_tp
+from .execution.position_guard import (
     StateStore,
     daily_loss_exceeded,
     has_open_position,
@@ -19,12 +19,12 @@ from execution.position_guard import (
     register_order_opened,
     roll_day_if_needed,
 )
-from indicators.ta import add_indicators
-from notifier.telegram_bot import TelegramNotifier
-from strategy.risk_manager import calc_position_size, extract_precision_rules, validate_position_size
-from strategy.signal_builder import build_trade_setup
-from utils.formatting import format_signal_message
-from utils.logger import configure_logger, get_logger
+from .indicators.ta import add_indicators
+from .notifier.telegram_bot import TelegramNotifier
+from .strategy.risk_manager import calc_position_size, extract_precision_rules, validate_position_size
+from .strategy.signal_builder import build_trade_setup
+from .utils.formatting import format_signal_message
+from .utils.logger import configure_logger, get_logger
 
 
 STABLE_SIGNAL_HASH_FIELDS = {
