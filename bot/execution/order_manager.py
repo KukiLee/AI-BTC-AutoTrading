@@ -40,8 +40,7 @@ def place_entry_order(
 ) -> dict:
     payload = _build_entry_payload(symbol=symbol, side_word=side_word, qty=qty)
     if dry_run:
-        # Optional test-order branch for safer validation in testnet_auto.
-        return adapter.client.futures_create_test_order(**payload)
+        return {"dry_run": True, "entry_payload": payload, "validated": True}
     return adapter.create_futures_order(**payload)
 
 
@@ -125,13 +124,46 @@ def place_market_order_with_sl_tp(
     side_word = "BUY" if side == "LONG" else "SELL"
     reduce_side = "SELL" if side == "LONG" else "BUY"
 
+    entry_payload = _build_entry_payload(symbol=symbol, side_word=side_word, qty=normalized["normalized_qty"])
+    protective_payloads = [
+        _build_conditional_payload(
+            symbol=symbol,
+            side_word=reduce_side,
+            stop_price=normalized["normalized_sl"],
+            order_type="STOP_MARKET",
+        ),
+        _build_conditional_payload(
+            symbol=symbol,
+            side_word=reduce_side,
+            stop_price=normalized["normalized_tp"],
+            order_type="TAKE_PROFIT_MARKET",
+        ),
+    ]
+
+    if dry_run:
+        dry_run_warnings = list(normalized["warnings"])
+        validated = True
+        if conditional_order_mode == "algo":
+            validated = False
+            dry_run_warnings.append(
+                "Conditional order mode 'algo' is blocked until Binance Algo Service flow is implemented/validated."
+            )
+        return {
+            "dry_run": True,
+            "entry_payload": entry_payload,
+            "protective_payloads": protective_payloads,
+            "validated": validated,
+            "warnings": dry_run_warnings,
+            "normalized": normalized,
+        }
+
     try:
         entry_order = place_entry_order(
             adapter=adapter,
             symbol=symbol,
             side_word=side_word,
             qty=normalized["normalized_qty"],
-            dry_run=dry_run,
+            dry_run=False,
         )
         protective_orders = place_protective_orders(
             adapter=adapter,

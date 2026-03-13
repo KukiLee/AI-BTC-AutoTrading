@@ -8,11 +8,17 @@
 
 ## Policy modes
 - `baseline_alert_only` (default): baseline analysis + alerts, no orders.
-- `baseline_testnet_auto`: baseline READY signals execute on testnet.
-- `ai_shadow`: baseline executes normally, AI only logs diagnostics.
-- `ai_filter_testnet`: AI may block baseline READY on testnet, never promotes NO_TRADE.
-- `ai_testnet_auto`: AI may choose one allowed candidate (or no trade) from deterministic candidate universe.
+- `baseline_testnet_auto`: baseline READY signals execute as **real Binance testnet orders**.
+- `ai_shadow`: advisory diagnostics only, **no orders**.
+- `ai_filter_testnet`: AI may block baseline READY; if allowed, executes as **real Binance testnet orders**.
+- `ai_testnet_auto`: AI may choose one allowed candidate (or no trade); chosen candidate executes as **real Binance testnet orders**.
 - `baseline_vs_ai_ab_test`: logs both streams for clean comparison (baseline execute + AI shadow by default).
+
+## Testnet vs dry-run execution semantics
+- Binance testnet orders are real orders on Binance's simulated testnet exchange.
+- They do not use real money, but they do create actual testnet orders/positions.
+- `*_testnet_auto` modes are **not** dry-run modes.
+- `ENABLE_DRY_RUN=true` is a separate safety switch: validation/logging only, with **zero** entry/SL/TP order creation.
 
 ## Constrained setup universe
 - Symbol fixed to BTCUSDT.
