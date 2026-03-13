@@ -24,6 +24,11 @@ class BotState:
     last_sl: float = 0.0
     last_tp: float = 0.0
     last_position_status: str = ""
+    setup_id: str = ""
+    last_ai_score: float | None = None
+    last_ai_decision: str = ""
+    last_baseline_decision: str = ""
+    last_trade_metadata_ref: str = ""
 
 
 class StateStore:
@@ -64,6 +69,11 @@ def register_order_opened(
     entry: float,
     sl: float,
     tp: float,
+    setup_id: str = "",
+    baseline_decision: str = "",
+    ai_score: float | None = None,
+    ai_decision: str = "",
+    trade_metadata_ref: str = "",
 ) -> BotState:
     """Record an order-open event from placement response (not fill-accurate PnL tracking)."""
     state = roll_day_if_needed(state)
@@ -73,6 +83,11 @@ def register_order_opened(
     state.last_sl = float(sl)
     state.last_tp = float(tp)
     state.last_position_status = "OPENED"
+    state.setup_id = setup_id
+    state.last_baseline_decision = baseline_decision
+    state.last_ai_score = ai_score
+    state.last_ai_decision = ai_decision
+    state.last_trade_metadata_ref = trade_metadata_ref
     return state
 
 

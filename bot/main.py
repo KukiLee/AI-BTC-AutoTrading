@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from dataclasses import asdict
 
 from .config import ExecutionMode, settings
 from .data.market_data import fetch_multi_timeframe_data
@@ -20,7 +21,11 @@ from .execution.position_guard import (
     roll_day_if_needed,
 )
 from .indicators.ta import add_indicators
+from .intelligence.evaluator import evaluate_setup
+from .intelligence.feature_builder import build_setup_feature_row
+from .intelligence.policy import resolve_trade_policy
 from .notifier.telegram_bot import TelegramNotifier
+from .storage.trade_logger import log_ai_evaluation, log_setup_row
 from .strategy.risk_manager import calc_position_size, extract_precision_rules, validate_position_size
 from .strategy.signal_builder import build_trade_setup
 from .utils.formatting import format_signal_message
@@ -43,6 +48,10 @@ STABLE_SIGNAL_HASH_FIELDS = {
     "entry_type",
     "news_matches",
     "structure_summary",
+    "baseline_decision",
+    "baseline_reason",
+    "setup_id",
+    "ai_evaluation",
     "error_type",
 }
 
@@ -79,19 +88,28 @@ async def run() -> None:
 
     while True:
         try:
-            # 1) 데이터 fetch
             frames = fetch_multi_timeframe_data(adapter, settings.symbol)
-            # 2) 지표 계산
             df_15m = add_indicators(frames["15m"])
             df_1h = add_indicators(frames["1h"])
             df_4h = add_indicators(frames["4h"])
-            # 3) 뉴스 fetch
             headlines = fetch_recent_headlines(settings.news_sources, settings.news_lookback_minutes)
-            # 4) signal build
             signal = build_trade_setup(df_15m, df_1h, df_4h, headlines, settings)
             logger.info(f"Signal result: {signal['status']} | reason={signal['reason']}")
 
-            # 5) dedup alert
+            feature_row = build_setup_feature_row(signal, df_15m, df_1h, df_4h, settings)
+            if settings.dataset_logging_enabled and settings.setup_log_jsonl:
+                if not log_setup_row(feature_row, settings.dataset_dir):
+                    logger.warning("Setup row logging failed; continuing with execution flow")
+
+            ai_eval = evaluate_setup(feature_row, settings)
+            signal["ai_evaluation"] = asdict(ai_eval)
+            if settings.dataset_logging_enabled:
+                ai_payload = {"setup_id": feature_row.setup_id, "timestamp": feature_row.timestamp, **asdict(ai_eval)}
+                if not log_ai_evaluation(ai_payload, settings.dataset_dir):
+                    logger.warning("AI evaluation logging failed; continuing with execution flow")
+
+            policy = resolve_trade_policy(signal, ai_eval, settings)
+
             state = roll_day_if_needed(state)
             current_hash = signal_hash(signal, exclude_timestamp=settings.alert_dedup_exclude_timestamp)
             should_alert = signal["status"] in {"READY", "ERROR"}
@@ -114,8 +132,7 @@ async def run() -> None:
                     elif key == "NO_TRADE":
                         state.last_signal_hash = current_hash
 
-            # 6) execution guard
-            if signal["status"] == "READY" and settings.execution_mode != ExecutionMode.ALERT_ONLY:
+            if policy["final_execute"] and settings.execution_mode != ExecutionMode.ALERT_ONLY:
                 if symbol_filters is None:
                     try:
                         symbol_filters = adapter.get_symbol_filters(settings.symbol)
@@ -130,7 +147,6 @@ async def run() -> None:
                 elif daily_loss_exceeded(state, settings.max_daily_loss_r):
                     logger.info("Order blocked: daily loss exceeded")
                 else:
-                    # 7) order
                     if symbol_filters is None:
                         logger.warning("Order blocked: symbol precision metadata unavailable")
                     else:
@@ -162,7 +178,6 @@ async def run() -> None:
                                 conditional_order_mode=settings.conditional_order_mode,
                                 dry_run=settings.execution_mode == ExecutionMode.TESTNET_AUTO,
                             )
-                            # 8) state update
                             state = register_order_opened(
                                 state,
                                 timestamp=signal.get("timestamp", ""),
@@ -170,6 +185,11 @@ async def run() -> None:
                                 entry=float(signal.get("entry") or 0.0),
                                 sl=float(signal.get("sl") or 0.0),
                                 tp=float(signal.get("tp") or 0.0),
+                                setup_id=signal.get("setup_id", ""),
+                                baseline_decision=signal.get("baseline_decision", ""),
+                                ai_score=ai_eval.score,
+                                ai_decision=ai_eval.recommendation,
+                                trade_metadata_ref=str(result.get("order_id", "")) if isinstance(result, dict) else "",
                             )
                             logger.info(f"Order attempted successfully: {result}")
 
