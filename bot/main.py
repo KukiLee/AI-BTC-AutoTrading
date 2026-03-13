@@ -16,6 +16,7 @@ from execution.position_guard import (
     daily_loss_exceeded,
     has_open_position,
     in_cooldown,
+    register_order_opened,
     roll_day_if_needed,
 )
 from indicators.ta import add_indicators
@@ -26,10 +27,30 @@ from utils.formatting import format_signal_message
 from utils.logger import configure_logger, get_logger
 
 
+STABLE_SIGNAL_HASH_FIELDS = {
+    "status",
+    "reason",
+    "side",
+    "bias",
+    "entry",
+    "sl",
+    "tp",
+    "risk_per_unit",
+    "news_score",
+    "news_reason",
+    "blockers",
+    "chase_info",
+    "entry_type",
+    "news_matches",
+    "structure_summary",
+    "error_type",
+}
+
+
 def signal_hash(signal: dict, exclude_timestamp: bool = True) -> str:
-    payload = dict(signal)
-    if exclude_timestamp:
-        payload.pop("timestamp", None)
+    payload = {k: signal.get(k) for k in STABLE_SIGNAL_HASH_FIELDS if k in signal}
+    if not exclude_timestamp and "timestamp" in signal:
+        payload["timestamp"] = signal.get("timestamp")
     encoded = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -47,15 +68,14 @@ async def run() -> None:
     )
     notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
     state_store = StateStore(settings.state_file)
-    state = state_store.load()
-    state = roll_day_if_needed(state)
+    state = roll_day_if_needed(state_store.load())
 
     symbol_filters = None
     try:
         symbol_filters = adapter.get_symbol_filters(settings.symbol)
         logger.info("Symbol metadata cached at startup")
     except Exception as exc:
-        logger.warning(f"Failed to cache symbol metadata: {exc}")
+        logger.warning(f"Failed to cache symbol metadata at startup: {exc}")
 
     while True:
         try:
@@ -76,22 +96,33 @@ async def run() -> None:
             current_hash = signal_hash(signal, exclude_timestamp=settings.alert_dedup_exclude_timestamp)
             should_alert = signal["status"] in {"READY", "ERROR"}
             if settings.alert_on_no_trade and signal["status"] == "NO_TRADE":
-                should_alert = True
+                should_alert = current_hash != state.last_signal_hash
 
             if should_alert:
                 key = signal["status"]
                 previous_hash = state.last_ready_hash if key == "READY" else state.last_error_hash
+                if key == "NO_TRADE":
+                    previous_hash = state.last_signal_hash
                 if current_hash != previous_hash:
                     msg = format_signal_message(signal, settings.execution_mode.value, settings.symbol)
                     sent = await notifier.send_telegram(msg)
                     logger.info(f"Telegram sent={sent}")
                     if key == "READY":
                         state.last_ready_hash = current_hash
-                    if key == "ERROR":
+                    elif key == "ERROR":
                         state.last_error_hash = current_hash
+                    elif key == "NO_TRADE":
+                        state.last_signal_hash = current_hash
 
             # 6) execution guard
             if signal["status"] == "READY" and settings.execution_mode != ExecutionMode.ALERT_ONLY:
+                if symbol_filters is None:
+                    try:
+                        symbol_filters = adapter.get_symbol_filters(settings.symbol)
+                        logger.info("Symbol metadata refreshed for execution")
+                    except Exception as exc:
+                        logger.warning(f"Order blocked: symbol precision metadata unavailable ({exc})")
+
                 if has_open_position(adapter, settings.symbol):
                     logger.info("Order blocked: open position exists")
                 elif in_cooldown(state, settings.cooldown_minutes):
@@ -132,17 +163,19 @@ async def run() -> None:
                                 dry_run=settings.execution_mode == ExecutionMode.TESTNET_AUTO,
                             )
                             # 8) state update
-                            state.last_order_timestamp = signal["timestamp"]
-                            state.last_trade_side = signal.get("side") or ""
-                            state.last_entry = float(signal.get("entry") or 0.0)
-                            state.last_sl = float(signal.get("sl") or 0.0)
-                            state.last_tp = float(signal.get("tp") or 0.0)
-                            state.last_position_status = "OPENED"
+                            state = register_order_opened(
+                                state,
+                                timestamp=signal.get("timestamp", ""),
+                                side=signal.get("side") or "",
+                                entry=float(signal.get("entry") or 0.0),
+                                sl=float(signal.get("sl") or 0.0),
+                                tp=float(signal.get("tp") or 0.0),
+                            )
                             logger.info(f"Order attempted successfully: {result}")
 
             state_store.save(state)
         except Exception as exc:
-            logger.exception(f"Loop error: {exc}")
+            logger.exception("Loop error", exc_info=exc)
             await notifier.send_telegram(f"[ERROR] Bot loop failed: {type(exc).__name__}: {exc}")
 
         await asyncio.sleep(settings.loop_interval_seconds)

@@ -23,10 +23,15 @@ def is_chasing_move(df_15m: pd.DataFrame, threshold_pct: float, bars: int = 3) -
     first = float(chunk.iloc[0]["close"])
     last = float(chunk.iloc[-1]["close"])
     if first <= 0:
-        return {"triggered": True, "direction": "UNKNOWN", "move_pct": 0.0}
+        return {"triggered": True, "direction": "UNKNOWN", "move_pct": 0.0, "threshold_pct": threshold_pct}
     pct = ((last - first) / first) * 100
     direction = "UP" if pct > 0 else "DOWN" if pct < 0 else "FLAT"
-    return {"triggered": abs(pct) >= threshold_pct, "direction": direction, "move_pct": pct}
+    return {
+        "triggered": abs(pct) >= threshold_pct,
+        "direction": direction,
+        "move_pct": pct,
+        "threshold_pct": threshold_pct,
+    }
 
 
 def room_check(
@@ -35,19 +40,27 @@ def room_check(
     tp: float,
     swing_highs: list[float],
     swing_lows: list[float],
-) -> tuple[bool, str, list[float]]:
+) -> tuple[bool, str, list[dict]]:
+    """Check clear path to target.
+
+    Uses a lightweight 2% distance cutoff for "meaningful" blockers to avoid overreacting
+    to distant swing points while still surfacing nearby resistance/support.
+    """
+
     if side == "LONG":
         blockers = [h for h in swing_highs if entry < h < tp]
         meaningful = [x for x in blockers if abs(x - entry) / entry <= 0.02]
+        detail = [{"type": "resistance", "level": x, "distance_pct": abs(x - entry) / entry * 100} for x in meaningful[:3]]
         if meaningful:
-            return False, f"Intermediate resistance detected at {meaningful[:3]}", meaningful[:3]
+            return False, f"Intermediate resistance detected at {[x for x in meaningful[:3]]}", detail
         return True, "Room clear", []
 
     if side == "SHORT":
         blockers = [l for l in swing_lows if tp < l < entry]
         meaningful = [x for x in blockers if abs(entry - x) / entry <= 0.02]
+        detail = [{"type": "support", "level": x, "distance_pct": abs(entry - x) / entry * 100} for x in meaningful[:3]]
         if meaningful:
-            return False, f"Intermediate support detected at {meaningful[:3]}", meaningful[:3]
+            return False, f"Intermediate support detected at {[x for x in meaningful[:3]]}", detail
         return True, "Room clear", []
 
     return False, "Unsupported side", []

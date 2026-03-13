@@ -27,7 +27,7 @@ def round_to_step(value: float, step: float) -> float:
     dec_value = _to_decimal(value)
     dec_step = _to_decimal(step)
     if dec_step <= 0:
-        return float(dec_value)
+        raise RiskValidationError(f"Invalid step size: {step}")
     rounded = (dec_value / dec_step).to_integral_value(rounding=ROUND_DOWN) * dec_step
     return float(rounded)
 
@@ -36,9 +36,11 @@ def round_price_to_tick(price: float, tick_size: float, side: str | None = None)
     dec_price = _to_decimal(price)
     dec_tick = _to_decimal(tick_size)
     if dec_tick <= 0:
-        return float(dec_price)
+        raise RiskValidationError(f"Invalid tick size: {tick_size}")
 
     ratio = dec_price / dec_tick
+    # Stop/TP rounding can be side-aware in certain exchange/order-type combinations.
+    # Keep explicit behavior (SHORT rounds up, others round down) to preserve legacy intent.
     if side == "SHORT":
         rounded = ratio.to_integral_value(rounding=ROUND_UP) * dec_tick
     else:
@@ -47,19 +49,34 @@ def round_price_to_tick(price: float, tick_size: float, side: str | None = None)
 
 
 def extract_precision_rules(symbol_filters: dict) -> PrecisionRules:
+    if not isinstance(symbol_filters, dict):
+        raise RiskValidationError("Invalid symbol filters payload: expected dict")
+
     lot_filter = symbol_filters.get("LOT_SIZE") or {}
     market_lot_filter = symbol_filters.get("MARKET_LOT_SIZE") or {}
     price_filter = symbol_filters.get("PRICE_FILTER") or {}
-    notional_filter = symbol_filters.get("MIN_NOTIONAL") or {}
+    notional_filter = symbol_filters.get("MIN_NOTIONAL") or symbol_filters.get("NOTIONAL") or {}
 
     min_qty = _to_decimal(lot_filter.get("minQty") or market_lot_filter.get("minQty"))
-    max_qty = _to_decimal(lot_filter.get("maxQty") or market_lot_filter.get("maxQty"), default="99999999")
+    max_qty = _to_decimal(lot_filter.get("maxQty") or market_lot_filter.get("maxQty"))
     step_size = _to_decimal(lot_filter.get("stepSize") or market_lot_filter.get("stepSize"))
     tick_size = _to_decimal(price_filter.get("tickSize"))
     min_notional = _to_decimal(notional_filter.get("notional") or notional_filter.get("minNotional"))
 
-    if min_qty <= 0 or max_qty <= 0 or step_size <= 0 or tick_size <= 0:
-        raise RiskValidationError("Missing required exchange precision rules (minQty/maxQty/stepSize/tickSize)")
+    missing_fields: list[str] = []
+    if min_qty <= 0:
+        missing_fields.append("minQty")
+    if max_qty <= 0:
+        missing_fields.append("maxQty")
+    if step_size <= 0:
+        missing_fields.append("stepSize")
+    if tick_size <= 0:
+        missing_fields.append("tickSize")
+
+    if missing_fields:
+        raise RiskValidationError(
+            "Missing or invalid required exchange precision fields: " + ", ".join(missing_fields)
+        )
 
     return PrecisionRules(
         min_qty=min_qty,
@@ -84,6 +101,8 @@ def normalize_order_values(
     normalized_tp = round_price_to_tick(tp, float(rules.tick_size), side=side)
 
     warnings: list[str] = []
+    if normalized_qty <= 0:
+        warnings.append(f"qty became non-positive after step normalization: raw={qty}, normalized={normalized_qty}")
     if normalized_qty != qty:
         warnings.append(f"qty adjusted by stepSize: raw={qty} -> normalized={normalized_qty}")
     if normalized_sl != sl:
@@ -129,20 +148,34 @@ def validate_position_size(
     min_notional: float | None = None,
     price: float | None = None,
 ) -> tuple[bool, str]:
-    if qty <= 0:
+    dec_qty = _to_decimal(qty)
+    dec_min_qty = _to_decimal(min_qty)
+    dec_max_qty = _to_decimal(max_qty)
+
+    if dec_qty <= 0:
         return False, "Quantity must be > 0"
-    if qty < min_qty:
+    if dec_qty < dec_min_qty:
         return False, f"Quantity below minimum threshold: {qty} < {min_qty}"
-    if qty > max_qty:
+    if dec_qty > dec_max_qty:
         return False, f"Quantity above maximum threshold: {qty} > {max_qty}"
-    if step_size and step_size > 0:
-        rounded = round_to_step(qty, step_size)
-        if abs(rounded - qty) > 1e-12:
+
+    if step_size is not None:
+        dec_step = _to_decimal(step_size)
+        if dec_step <= 0:
+            return False, f"Invalid step size: {step_size}"
+        rounded = _to_decimal(round_to_step(qty, step_size))
+        if rounded != dec_qty:
             return False, f"Quantity does not align with step size: qty={qty}, step={step_size}"
-    if min_notional and min_notional > 0 and price and price > 0:
-        notional = qty * price
-        if notional < min_notional:
-            return False, f"Notional below minimum threshold: {notional} < {min_notional}"
+
+    if min_notional is not None:
+        dec_min_notional = _to_decimal(min_notional)
+        if dec_min_notional > 0:
+            if price is None or price <= 0:
+                return False, "Price must be supplied and > 0 when min_notional validation is enabled"
+            notional = dec_qty * _to_decimal(price)
+            if notional < dec_min_notional:
+                return False, f"Notional below minimum threshold: {float(notional)} < {min_notional}"
+
     return True, "Quantity valid"
 
 
@@ -150,5 +183,9 @@ def apply_exchange_precision(qty: float, price: float, symbol_filters: dict | No
     """Apply exchange quantity/price precision from symbol filters."""
     if symbol_filters is None:
         raise RiskValidationError("Missing symbol precision metadata")
-    normalized = normalize_order_values(qty=qty, sl=price, tp=price, symbol_filters=symbol_filters, side="LONG")
-    return normalized["normalized_qty"], normalized["normalized_sl"]
+    rules = extract_precision_rules(symbol_filters)
+    normalized_qty = round_to_step(qty, float(rules.step_size))
+    normalized_price = round_price_to_tick(price, float(rules.tick_size), side=None)
+    if normalized_qty <= 0:
+        raise RiskValidationError(f"Normalized quantity is non-positive after precision apply: {normalized_qty}")
+    return normalized_qty, normalized_price

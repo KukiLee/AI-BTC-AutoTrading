@@ -37,6 +37,7 @@ class StateStore:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception:
+            # Corrupted state file should not crash startup.
             return BotState(day_key=default_day)
 
         defaults = asdict(BotState(day_key=default_day))
@@ -55,7 +56,28 @@ def roll_day_if_needed(state: BotState) -> BotState:
     return state
 
 
+def register_order_opened(
+    state: BotState,
+    *,
+    timestamp: str,
+    side: str,
+    entry: float,
+    sl: float,
+    tp: float,
+) -> BotState:
+    """Record an order-open event from placement response (not fill-accurate PnL tracking)."""
+    state = roll_day_if_needed(state)
+    state.last_order_timestamp = timestamp
+    state.last_trade_side = side
+    state.last_entry = float(entry)
+    state.last_sl = float(sl)
+    state.last_tp = float(tp)
+    state.last_position_status = "OPENED"
+    return state
+
+
 def register_stop_out(state: BotState, r_loss: float = 1.0) -> BotState:
+    # R-based stop tracking is an operational approximation unless fill events are wired.
     state = roll_day_if_needed(state)
     state.realized_r_today -= abs(r_loss)
     state.last_stop_out_time = datetime.now(timezone.utc).isoformat()
@@ -64,6 +86,7 @@ def register_stop_out(state: BotState, r_loss: float = 1.0) -> BotState:
 
 
 def register_take_profit(state: BotState, r_gain: float = 2.0) -> BotState:
+    # R-based TP tracking is an operational approximation unless fill events are wired.
     state = roll_day_if_needed(state)
     state.realized_r_today += abs(r_gain)
     state.last_position_status = "TAKE_PROFIT"

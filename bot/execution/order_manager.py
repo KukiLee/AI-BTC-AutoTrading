@@ -9,6 +9,28 @@ from utils.exceptions import ExchangeAdapterError, RiskValidationError
 from utils.logger import get_logger
 
 
+def _build_entry_payload(symbol: str, side_word: str, qty: float) -> dict:
+    return {
+        "symbol": symbol,
+        "side": side_word,
+        "type": "MARKET",
+        "quantity": qty,
+    }
+
+
+def _build_conditional_payload(symbol: str, side_word: str, stop_price: float, order_type: str) -> dict:
+    return {
+        "symbol": symbol,
+        "side": side_word,
+        "type": order_type,
+        "stopPrice": stop_price,
+        "closePosition": True,
+        "workingType": "CONTRACT_PRICE",
+        # TODO: evaluate reduceOnly support by account mode and endpoint behavior.
+        # TODO: add explicit positionSide for hedge mode compatibility.
+    }
+
+
 def place_entry_order(
     adapter: BinanceFuturesAdapter,
     symbol: str,
@@ -16,9 +38,11 @@ def place_entry_order(
     qty: float,
     dry_run: bool = False,
 ) -> dict:
+    payload = _build_entry_payload(symbol=symbol, side_word=side_word, qty=qty)
     if dry_run:
-        return adapter.client.futures_create_test_order(symbol=symbol, side=side_word, type="MARKET", quantity=qty)
-    return adapter.create_futures_order(symbol=symbol, side=side_word, type="MARKET", quantity=qty)
+        # Optional test-order branch for safer validation in testnet_auto.
+        return adapter.client.futures_create_test_order(**payload)
+    return adapter.create_futures_order(**payload)
 
 
 def legacy_conditional_order_path(
@@ -28,29 +52,27 @@ def legacy_conditional_order_path(
     sl: float,
     tp: float,
 ) -> dict:
+    """Compatibility path for legacy conditional endpoints."""
     sl_order = adapter.create_futures_order(
-        symbol=symbol,
-        side=reduce_side,
-        type="STOP_MARKET",
-        stopPrice=sl,
-        closePosition=True,
-        workingType="CONTRACT_PRICE",
+        **_build_conditional_payload(symbol=symbol, side_word=reduce_side, stop_price=sl, order_type="STOP_MARKET")
     )
     tp_order = adapter.create_futures_order(
-        symbol=symbol,
-        side=reduce_side,
-        type="TAKE_PROFIT_MARKET",
-        stopPrice=tp,
-        closePosition=True,
-        workingType="CONTRACT_PRICE",
+        **_build_conditional_payload(
+            symbol=symbol,
+            side_word=reduce_side,
+            stop_price=tp,
+            order_type="TAKE_PROFIT_MARKET",
+        )
     )
     return {"sl": sl_order, "tp": tp_order}
 
 
-def algo_conditional_order_path(*_, **__) -> dict:
+def algo_conditional_order_path(*_, **kwargs) -> dict:
+    mode = kwargs.get("conditional_order_mode", "algo")
     raise RiskValidationError(
-        "Conditional order mode 'algo' selected, but algo conditional order path is not implemented yet. "
-        "Validate latest Binance Algo Service API before live usage."
+        f"Conditional order mode '{mode}' selected but blocked: Binance USDⓈ-M Futures conditional "
+        "orders are migrating to Algo Service endpoints; this path is intentionally disabled until "
+        "exchange-current endpoint validation is completed."
     )
 
 
@@ -63,7 +85,15 @@ def place_protective_orders(
     conditional_order_mode: str,
 ) -> dict:
     if conditional_order_mode == "algo":
-        return algo_conditional_order_path(adapter, symbol=symbol, reduce_side=reduce_side, sl=sl, tp=tp)
+        # TODO: integrate with Binance Algo Service endpoint migration once validated.
+        return algo_conditional_order_path(
+            adapter,
+            symbol=symbol,
+            reduce_side=reduce_side,
+            sl=sl,
+            tp=tp,
+            conditional_order_mode=conditional_order_mode,
+        )
     return legacy_conditional_order_path(adapter, symbol=symbol, reduce_side=reduce_side, sl=sl, tp=tp)
 
 
@@ -115,8 +145,10 @@ def place_market_order_with_sl_tp(
         message = str(exc)
         if "-4120" in message:
             raise RiskValidationError(
-                "Conditional order rejected (-4120). Binance conditional order endpoint may have moved; "
-                "switch CONDITIONAL_ORDER_MODE or verify latest Algo Service path."
+                "Conditional order rejected (-4120) after entry placement attempt. "
+                f"mode={execution_mode.value}, conditional_order_mode={conditional_order_mode}, symbol={symbol}. "
+                "This matches Binance conditional order migration constraints; verify legacy compatibility or "
+                "implement/validate Algo Service endpoint flow before auto execution."
             ) from exc
         raise
 

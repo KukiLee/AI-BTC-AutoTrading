@@ -35,6 +35,12 @@ class MatchedNewsItem:
 
 
 def score_news(headlines: list[dict], lookback_minutes: int | None = None) -> dict:
+    """Score headlines with deterministic keyword matching.
+
+    When lookback_minutes is provided, entries older than cutoff are skipped.
+    Entries without parsable timestamps are kept to avoid silently dropping source data.
+    """
+
     score = 0
     matched_keywords: list[str] = []
     matched_titles: list[str] = []
@@ -45,7 +51,7 @@ def score_news(headlines: list[dict], lookback_minutes: int | None = None) -> di
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
 
     for item in headlines:
-        title = item.get("title", "")
+        title = str(item.get("title", ""))
         norm = title.lower()
         published_ts = item.get("published_ts")
         if cutoff and published_ts:
@@ -56,10 +62,11 @@ def score_news(headlines: list[dict], lookback_minutes: int | None = None) -> di
                 if dt.astimezone(timezone.utc) < cutoff:
                     continue
             except Exception:
+                # Keep malformed timestamp entries rather than failing whole score path.
                 pass
 
         title_hit = False
-        source = item.get("source", "unknown")
+        source = str(item.get("source", "unknown"))
         for kw, weight in RISK_OFF_KEYWORDS.items():
             if kw in norm:
                 score += weight
@@ -85,6 +92,11 @@ def score_news(headlines: list[dict], lookback_minutes: int | None = None) -> di
 
 
 def news_gate(score: int, side: str) -> dict:
+    """Policy thresholds:
+    - score <= -4: strong risk-off, block all entries.
+    - score >= +3 with LONG bias: favorable tailwind (still chart-driven).
+    - otherwise: neutral/mixed, do not force direction.
+    """
     if score <= -4:
         return {
             "allowed": False,
