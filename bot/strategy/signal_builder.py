@@ -31,9 +31,9 @@ class SignalResult:
     entry_type: str = "none"
     news_matches: list[dict] = field(default_factory=list)
     structure_summary: dict = field(default_factory=dict)
-    timeframe_trigger: str = "15m"
-    timeframe_bias_1h: str | None = None
-    timeframe_bias_4h: str | None = None
+    trigger_timeframe: str = "15m"
+    bias_1h: str | None = None
+    bias_4h: str | None = None
     retest_confirmed: bool = False
     baseline_decision: str = "NO_TRADE"
     baseline_reason: str = ""
@@ -92,8 +92,8 @@ def build_trade_setup(
             reason="Higher timeframe neutral",
             baseline_reason="Higher timeframe neutral",
             bias=bias,
-            timeframe_bias_1h=timeframe_bias_1h,
-            timeframe_bias_4h=timeframe_bias_4h,
+            bias_1h=timeframe_bias_1h,
+            bias_4h=timeframe_bias_4h,
             news_score=news_eval["score"],
             news_reason=gate["reason"],
             blockers=["bias: Higher timeframe neutral"],
@@ -144,8 +144,8 @@ def build_trade_setup(
             baseline_reason="Invalid structure: stop distance <= 0",
             side=bias,
             bias=bias,
-            timeframe_bias_1h=timeframe_bias_1h,
-            timeframe_bias_4h=timeframe_bias_4h,
+            bias_1h=timeframe_bias_1h,
+            bias_4h=timeframe_bias_4h,
             news_score=news_eval["score"],
             news_reason=gate["reason"],
             blockers=blockers + ["structure: Invalid stop distance"],
@@ -192,8 +192,8 @@ def build_trade_setup(
         entry_type=entry_type,
         retest_confirmed=retest_confirmed,
         news_matches=news_eval["matched_items"],
-        timeframe_bias_1h=timeframe_bias_1h,
-        timeframe_bias_4h=timeframe_bias_4h,
+        bias_1h=timeframe_bias_1h,
+        bias_4h=timeframe_bias_4h,
         baseline_decision="NO_TRADE" if blockers else "READY",
         symbol=settings.symbol,
         structure_summary={

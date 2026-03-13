@@ -21,70 +21,37 @@ from .execution.position_guard import (
     roll_day_if_needed,
 )
 from .indicators.ta import add_indicators
-from .intelligence.evaluator import evaluate_setup
-from .intelligence.feature_builder import build_setup_feature_row
+from .intelligence.ab_test import compare_baseline_vs_ai
+from .intelligence.evaluator import evaluate_candidate, evaluate_setup
+from .intelligence.feature_builder import build_candidate_feature_row, build_setup_feature_row
 from .intelligence.policy import resolve_trade_policy
 from .notifier.telegram_bot import TelegramNotifier
-from .storage.trade_logger import log_ai_evaluation, log_setup_row
+from .storage.schemas import PolicyDecisionRecord
+from .storage.trade_logger import (
+    log_ai_evaluations,
+    log_candidate_feature_rows,
+    log_policy_decision,
+    log_setup_feature_row,
+)
+from .strategy.candidate_builder import build_trade_candidates
 from .strategy.risk_manager import calc_position_size, extract_precision_rules, validate_position_size
 from .strategy.signal_builder import build_trade_setup
 from .utils.formatting import format_signal_message
 from .utils.logger import configure_logger, get_logger
 
 
-STABLE_SIGNAL_HASH_FIELDS = {
-    "status",
-    "reason",
-    "side",
-    "bias",
-    "entry",
-    "sl",
-    "tp",
-    "risk_per_unit",
-    "news_score",
-    "news_reason",
-    "blockers",
-    "chase_info",
-    "entry_type",
-    "news_matches",
-    "structure_summary",
-    "baseline_decision",
-    "baseline_reason",
-    "setup_id",
-    "ai_evaluation",
-    "error_type",
-}
-
-
-def signal_hash(signal: dict, exclude_timestamp: bool = True) -> str:
-    payload = {k: signal.get(k) for k in STABLE_SIGNAL_HASH_FIELDS if k in signal}
-    if not exclude_timestamp and "timestamp" in signal:
-        payload["timestamp"] = signal.get("timestamp")
-    encoded = json.dumps(payload, sort_keys=True, default=str)
+def signal_hash(signal: dict) -> str:
+    encoded = json.dumps(signal, sort_keys=True, default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 async def run() -> None:
     configure_logger("logs")
     logger = get_logger()
-    logger.info("Bot startup")
-    logger.info(f"Execution mode: {settings.execution_mode}")
-
-    adapter = BinanceFuturesAdapter(
-        api_key=settings.binance_api_key,
-        api_secret=settings.binance_api_secret,
-        testnet=settings.binance_testnet,
-    )
+    adapter = BinanceFuturesAdapter(settings.binance_api_key, settings.binance_api_secret, settings.binance_testnet)
     notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
     state_store = StateStore(settings.state_file)
     state = roll_day_if_needed(state_store.load())
-
-    symbol_filters = None
-    try:
-        symbol_filters = adapter.get_symbol_filters(settings.symbol)
-        logger.info("Symbol metadata cached at startup")
-    except Exception as exc:
-        logger.warning(f"Failed to cache symbol metadata at startup: {exc}")
 
     while True:
         try:
@@ -94,109 +61,106 @@ async def run() -> None:
             df_4h = add_indicators(frames["4h"])
             headlines = fetch_recent_headlines(settings.news_sources, settings.news_lookback_minutes)
             signal = build_trade_setup(df_15m, df_1h, df_4h, headlines, settings)
-            logger.info(f"Signal result: {signal['status']} | reason={signal['reason']}")
+            candidates = build_trade_candidates(signal, df_15m, df_1h, df_4h, settings)
 
-            feature_row = build_setup_feature_row(signal, df_15m, df_1h, df_4h, settings)
-            if settings.dataset_logging_enabled and settings.setup_log_jsonl:
-                if not log_setup_row(feature_row, settings.dataset_dir):
-                    logger.warning("Setup row logging failed; continuing with execution flow")
-
-            ai_eval = evaluate_setup(feature_row, settings)
-            signal["ai_evaluation"] = asdict(ai_eval)
+            setup_row = build_setup_feature_row(signal, df_15m, df_1h, df_4h, settings)
+            candidate_rows = [build_candidate_feature_row(c, signal, df_15m, df_1h, df_4h, settings) for c in candidates]
             if settings.dataset_logging_enabled:
-                ai_payload = {"setup_id": feature_row.setup_id, "timestamp": feature_row.timestamp, **asdict(ai_eval)}
-                if not log_ai_evaluation(ai_payload, settings.dataset_dir):
-                    logger.warning("AI evaluation logging failed; continuing with execution flow")
+                log_setup_feature_row(setup_row, settings.dataset_dir)
+                log_candidate_feature_rows(candidate_rows, settings.dataset_dir)
 
-            policy = resolve_trade_policy(signal, ai_eval, settings)
+            ai_setup_eval = evaluate_setup(setup_row, settings)
+            signal["ai_evaluation"] = asdict(ai_setup_eval)
 
-            state = roll_day_if_needed(state)
-            current_hash = signal_hash(signal, exclude_timestamp=settings.alert_dedup_exclude_timestamp)
-            should_alert = signal["status"] in {"READY", "ERROR"}
-            if settings.alert_on_no_trade and signal["status"] == "NO_TRADE":
-                should_alert = current_hash != state.last_signal_hash
+            ai_candidate_evals = {}
+            ai_eval_rows = [
+                {
+                    "setup_id": signal.get("setup_id"),
+                    "candidate_id": None,
+                    "timestamp": signal.get("timestamp"),
+                    **asdict(ai_setup_eval),
+                }
+            ]
+            for row in candidate_rows:
+                eval_result = evaluate_candidate(row, settings)
+                ai_candidate_evals[row.candidate_id] = asdict(eval_result)
+                ai_eval_rows.append({"setup_id": row.setup_id, "candidate_id": row.candidate_id, **asdict(eval_result)})
 
-            if should_alert:
-                key = signal["status"]
-                previous_hash = state.last_ready_hash if key == "READY" else state.last_error_hash
-                if key == "NO_TRADE":
-                    previous_hash = state.last_signal_hash
-                if current_hash != previous_hash:
-                    msg = format_signal_message(signal, settings.execution_mode.value, settings.symbol)
-                    sent = await notifier.send_telegram(msg)
-                    logger.info(f"Telegram sent={sent}")
-                    if key == "READY":
-                        state.last_ready_hash = current_hash
-                    elif key == "ERROR":
-                        state.last_error_hash = current_hash
-                    elif key == "NO_TRADE":
-                        state.last_signal_hash = current_hash
+            if settings.dataset_logging_enabled:
+                log_ai_evaluations(ai_eval_rows, settings.dataset_dir)
 
-            if policy["final_execute"] and settings.execution_mode != ExecutionMode.ALERT_ONLY:
-                if symbol_filters is None:
-                    try:
-                        symbol_filters = adapter.get_symbol_filters(settings.symbol)
-                        logger.info("Symbol metadata refreshed for execution")
-                    except Exception as exc:
-                        logger.warning(f"Order blocked: symbol precision metadata unavailable ({exc})")
+            policy = resolve_trade_policy(signal, candidates, ai_setup_eval, ai_candidate_evals, settings)
+            if settings.policy_mode.value == "baseline_vs_ai_ab_test":
+                policy["ab_comparison"] = compare_baseline_vs_ai(signal, policy)
 
-                if has_open_position(adapter, settings.symbol):
-                    logger.info("Order blocked: open position exists")
-                elif in_cooldown(state, settings.cooldown_minutes):
-                    logger.info("Order blocked: cooldown active")
-                elif daily_loss_exceeded(state, settings.max_daily_loss_r):
-                    logger.info("Order blocked: daily loss exceeded")
+            decision_record = PolicyDecisionRecord(
+                setup_id=signal.get("setup_id", ""),
+                candidate_id=(policy.get("selected_candidate") or {}).get("candidate_id"),
+                timestamp=signal.get("timestamp", ""),
+                symbol=signal.get("symbol", settings.symbol),
+                policy_mode=policy.get("policy_mode"),
+                baseline_decision=signal.get("baseline_decision", "NO_TRADE"),
+                final_decision=policy.get("final_decision", "NO_TRADE"),
+                execute=policy.get("execute", False),
+                reason=policy.get("reason", ""),
+                ai_setup_score=ai_setup_eval.score,
+                ai_candidate_score=ai_candidate_evals.get((policy.get("selected_candidate") or {}).get("candidate_id"), {}).get("score"),
+                ai_selected_candidate_type=(policy.get("selected_candidate") or {}).get("candidate_type"),
+                baseline_vs_ai_agree=(policy.get("ab_comparison") or {}).get("disagreement_reason") == "none" if policy.get("ab_comparison") else None,
+            )
+            if settings.dataset_logging_enabled:
+                log_policy_decision(decision_record, settings.dataset_dir)
+
+            current_hash = signal_hash({"signal": signal, "policy": policy})
+            if current_hash != state.last_signal_hash:
+                await notifier.send_telegram(format_signal_message(signal, policy, settings.symbol))
+                state.last_signal_hash = current_hash
+
+            should_execute = policy.get("execute", False) and settings.execution_mode != ExecutionMode.ALERT_ONLY
+            selected = policy.get("selected_candidate") if settings.policy_mode.value == "ai_testnet_auto" else signal
+            if should_execute and selected:
+                if has_open_position(adapter, settings.symbol) or in_cooldown(state, settings.cooldown_minutes) or daily_loss_exceeded(state, settings.max_daily_loss_r):
+                    pass
                 else:
-                    if symbol_filters is None:
-                        logger.warning("Order blocked: symbol precision metadata unavailable")
-                    else:
-                        mark_price = adapter.get_mark_price(settings.symbol)
-                        balance = adapter.get_futures_balance("USDT")
-                        qty = calc_position_size(balance, settings.risk_pct, signal["entry"], signal["sl"])
-                        rules = extract_precision_rules(symbol_filters)
-                        valid, reason = validate_position_size(
+                    symbol_filters = adapter.get_symbol_filters(settings.symbol)
+                    mark_price = adapter.get_mark_price(settings.symbol)
+                    balance = adapter.get_futures_balance("USDT")
+                    qty = calc_position_size(balance, settings.risk_pct, selected["entry"], selected["sl"])
+                    rules = extract_precision_rules(symbol_filters)
+                    valid, _ = validate_position_size(qty=qty, min_qty=float(rules.min_qty), max_qty=float(rules.max_qty), step_size=float(rules.step_size), min_notional=float(rules.min_notional) if rules.min_notional else None, price=mark_price)
+                    if valid:
+                        place_market_order_with_sl_tp(
+                            adapter=adapter,
+                            symbol=settings.symbol,
+                            side=selected["side"],
                             qty=qty,
-                            min_qty=float(rules.min_qty),
-                            max_qty=float(rules.max_qty),
-                            step_size=float(rules.step_size),
-                            min_notional=float(rules.min_notional) if rules.min_notional else None,
-                            price=mark_price,
+                            sl=selected["sl"],
+                            tp=selected["tp"],
+                            execution_mode=settings.execution_mode,
+                            enable_live_trading=settings.enable_live_trading,
+                            symbol_filters=symbol_filters,
+                            conditional_order_mode=settings.conditional_order_mode,
+                            dry_run=settings.execution_mode == ExecutionMode.TESTNET_AUTO,
                         )
-                        if not valid:
-                            logger.warning(f"Order blocked by qty validation: {reason}")
-                        else:
-                            result = place_market_order_with_sl_tp(
-                                adapter=adapter,
-                                symbol=settings.symbol,
-                                side=signal["side"],
-                                qty=qty,
-                                sl=signal["sl"],
-                                tp=signal["tp"],
-                                execution_mode=settings.execution_mode,
-                                enable_live_trading=settings.enable_live_trading,
-                                symbol_filters=symbol_filters,
-                                conditional_order_mode=settings.conditional_order_mode,
-                                dry_run=settings.execution_mode == ExecutionMode.TESTNET_AUTO,
-                            )
-                            state = register_order_opened(
-                                state,
-                                timestamp=signal.get("timestamp", ""),
-                                side=signal.get("side") or "",
-                                entry=float(signal.get("entry") or 0.0),
-                                sl=float(signal.get("sl") or 0.0),
-                                tp=float(signal.get("tp") or 0.0),
-                                setup_id=signal.get("setup_id", ""),
-                                baseline_decision=signal.get("baseline_decision", ""),
-                                ai_score=ai_eval.score,
-                                ai_decision=ai_eval.recommendation,
-                                trade_metadata_ref=str(result.get("order_id", "")) if isinstance(result, dict) else "",
-                            )
-                            logger.info(f"Order attempted successfully: {result}")
+                        state = register_order_opened(
+                            state,
+                            timestamp=signal.get("timestamp", ""),
+                            side=selected.get("side") or "",
+                            entry=float(selected.get("entry") or 0.0),
+                            sl=float(selected.get("sl") or 0.0),
+                            tp=float(selected.get("tp") or 0.0),
+                            setup_id=signal.get("setup_id", ""),
+                            candidate_id=selected.get("candidate_id", ""),
+                            policy_mode=settings.policy_mode.value,
+                            baseline_decision=signal.get("baseline_decision", ""),
+                            ai_score=ai_setup_eval.score,
+                            ai_recommendation=ai_setup_eval.recommendation,
+                        )
 
             state_store.save(state)
         except Exception as exc:
             logger.exception("Loop error", exc_info=exc)
-            await notifier.send_telegram(f"[ERROR] Bot loop failed: {type(exc).__name__}: {exc}")
+            await notifier.send_telegram(f"[ERROR] Bot loop failed: {type(exc).__name__}")
 
         await asyncio.sleep(settings.loop_interval_seconds)
 
