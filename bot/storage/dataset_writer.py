@@ -39,9 +39,17 @@ def write_setup_row(row, dataset_dir: str) -> bool:
     return _append_jsonl(_normalize_payload(row), _daily_file(dataset_dir, "setups"))
 
 
+def write_candidate_row(row, dataset_dir: str) -> bool:
+    return _append_jsonl(_normalize_payload(row), _daily_file(dataset_dir, "candidates"))
+
+
 def write_ai_eval_row(row, dataset_dir: str) -> bool:
     return _append_jsonl(_normalize_payload(row), _daily_file(dataset_dir, "ai_evals"))
 
 
-def write_outcome_row(row, dataset_dir: str) -> bool:
+def write_policy_decision(row, dataset_dir: str) -> bool:
+    return _append_jsonl(_normalize_payload(row), _daily_file(dataset_dir, "policy_decisions"))
+
+
+def write_outcome_label(row, dataset_dir: str) -> bool:
     return _append_jsonl(_normalize_payload(row), _daily_file(dataset_dir, "outcomes"))

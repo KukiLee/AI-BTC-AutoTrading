@@ -6,54 +6,49 @@ from bot.intelligence.policy import resolve_trade_policy
 
 @dataclass
 class DummyEval:
-    enabled: bool
+    allow: bool
     score: float
 
 
-def _settings(mode: str, execution_mode: str = "alert_only"):
-    return Settings(
-        BINANCE_TESTNET=True,
-        EXECUTION_MODE=execution_mode,
-        AI_EVALUATION_MODE=mode,
-        AI_MIN_SCORE_TO_ALLOW=0.70,
+def _settings(mode: str):
+    kwargs = {"POLICY_MODE": mode, "BINANCE_TESTNET": True}
+    if mode == "ai_testnet_auto":
+        kwargs["AI_CAN_EXECUTE_TESTNET"] = True
+    return Settings(**kwargs)
+
+
+def test_baseline_alert_only_never_executes():
+    out = resolve_trade_policy({"baseline_decision": "READY"}, [], DummyEval(True, 0.8), {}, _settings("baseline_alert_only"))
+    assert out["execute"] is False
+
+
+def test_ai_shadow_never_changes_execution():
+    out = resolve_trade_policy({"baseline_decision": "READY"}, [], DummyEval(False, 0.2), {}, _settings("ai_shadow"))
+    assert out["final_decision"] == "READY"
+
+
+def test_ai_filter_can_block_ready_but_not_promote_no_trade():
+    st = _settings("ai_filter_testnet")
+    blocked = resolve_trade_policy({"baseline_decision": "READY"}, [], DummyEval(False, 0.1), {}, st)
+    assert blocked["execute"] is False
+    no_promote = resolve_trade_policy({"baseline_decision": "NO_TRADE"}, [], DummyEval(True, 0.9), {}, st)
+    assert no_promote["final_decision"] == "NO_TRADE"
+
+
+def test_ai_testnet_auto_choose_only_valid_candidates():
+    st = _settings("ai_testnet_auto")
+    cands = [{"candidate_id": "x", "hard_blocked": False, "candidate_type": "retest_long"}]
+    evals = {"x": {"score": 0.9}}
+    out = resolve_trade_policy({"baseline_decision": "NO_TRADE"}, cands, DummyEval(True, 0.8), evals, st)
+    assert out["selected_candidate"]["candidate_id"] == "x"
+
+
+def test_ab_test_returns_both_streams():
+    out = resolve_trade_policy(
+        {"baseline_decision": "READY", "side": "LONG", "entry_type": "retest"},
+        [],
+        DummyEval(True, 0.8),
+        {},
+        _settings("baseline_vs_ai_ab_test"),
     )
-
-
-def test_off_mode_baseline_only():
-    result = resolve_trade_policy({"status": "READY"}, DummyEval(enabled=True, score=0.1), _settings("off"))
-    assert result["final_execute"] is True
-
-
-def test_shadow_mode_baseline_only():
-    result = resolve_trade_policy({"status": "READY"}, DummyEval(enabled=True, score=0.1), _settings("shadow"))
-    assert result["final_execute"] is True
-
-
-def test_filter_testnet_cannot_promote_no_trade():
-    result = resolve_trade_policy(
-        {"status": "NO_TRADE"},
-        DummyEval(enabled=True, score=0.95),
-        _settings("filter_testnet", execution_mode="testnet_auto"),
-    )
-    assert result["final_execute"] is False
-
-
-def test_filter_testnet_blocks_ready_below_threshold():
-    result = resolve_trade_policy(
-        {"status": "READY"},
-        DummyEval(enabled=True, score=0.2),
-        _settings("filter_testnet", execution_mode="testnet_auto"),
-    )
-    assert result["final_execute"] is False
-    assert result["ai_blocked"] is True
-
-
-def test_live_mode_baseline_authoritative_by_default():
-    settings = Settings(
-        BINANCE_TESTNET=False,
-        EXECUTION_MODE="live_auto",
-        ENABLE_LIVE_TRADING=True,
-        AI_EVALUATION_MODE="off",
-    )
-    result = resolve_trade_policy({"status": "READY"}, DummyEval(enabled=True, score=0.1), settings)
-    assert result["final_execute"] is True
+    assert out["ab_comparison"] is not None

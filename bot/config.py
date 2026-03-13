@@ -16,11 +16,13 @@ class ExecutionMode(str, Enum):
     LIVE_AUTO = "live_auto"
 
 
-class AIEvaluationMode(str, Enum):
-    OFF = "off"
-    SHADOW = "shadow"
-    ADVISORY = "advisory"
-    FILTER_TESTNET = "filter_testnet"
+class PolicyMode(str, Enum):
+    BASELINE_ALERT_ONLY = "baseline_alert_only"
+    BASELINE_TESTNET_AUTO = "baseline_testnet_auto"
+    AI_SHADOW = "ai_shadow"
+    AI_FILTER_TESTNET = "ai_filter_testnet"
+    AI_TESTNET_AUTO = "ai_testnet_auto"
+    BASELINE_VS_AI_AB_TEST = "baseline_vs_ai_ab_test"
 
 
 class Settings(BaseSettings):
@@ -60,16 +62,21 @@ class Settings(BaseSettings):
     stop_buffer_pct: float = Field(default=0.001, alias="STOP_BUFFER_PCT")
     state_file: Path = Field(default=Path("bot_state.json"), alias="STATE_FILE")
 
+    policy_mode: PolicyMode = Field(default=PolicyMode.BASELINE_ALERT_ONLY, alias="POLICY_MODE")
     ai_evaluation_enabled: bool = Field(default=True, alias="AI_EVALUATION_ENABLED")
-    ai_evaluation_mode: AIEvaluationMode = Field(default=AIEvaluationMode.SHADOW, alias="AI_EVALUATION_MODE")
     ai_min_score_to_allow: float = Field(default=0.70, alias="AI_MIN_SCORE_TO_ALLOW")
-    ai_policy_mode: str = Field(default="observe_only", alias="AI_POLICY_MODE")
+    ai_direct_trading_enabled: bool = Field(default=False, alias="AI_DIRECT_TRADING_ENABLED")
+    ai_can_filter_testnet: bool = Field(default=True, alias="AI_CAN_FILTER_TESTNET")
+    ai_can_execute_testnet: bool = Field(default=False, alias="AI_CAN_EXECUTE_TESTNET")
+    baseline_authoritative: bool = Field(default=True, alias="BASELINE_AUTHORITATIVE")
+    allowed_candidate_types: list[str] = Field(default=["retest", "breakout_fallback"], alias="ALLOWED_CANDIDATE_TYPES")
+    enable_ab_test: bool = Field(default=False, alias="ENABLE_AB_TEST")
+    ab_test_execute_both: bool = Field(default=False, alias="AB_TEST_EXECUTE_BOTH")
+    ai_max_candidates_per_cycle: int = Field(default=4, alias="AI_MAX_CANDIDATES_PER_CYCLE")
+
     dataset_logging_enabled: bool = Field(default=True, alias="DATASET_LOGGING_ENABLED")
     dataset_dir: str = Field(default="./bot/logs/datasets", alias="DATASET_DIR")
     setup_log_jsonl: bool = Field(default=True, alias="SETUP_LOG_JSONL")
-    outcome_labeling_enabled: bool = Field(default=True, alias="OUTCOME_LABELING_ENABLED")
-    baseline_rules_authoritative: bool = Field(default=True, alias="BASELINE_RULES_AUTHORITATIVE")
-    enable_ai_live_override: bool = Field(default=False, alias="ENABLE_AI_LIVE_OVERRIDE")
 
     news_sources: list[str] = Field(
         default=["https://www.coindesk.com/arc/outboundfeeds/rss/"], alias="NEWS_SOURCES"
@@ -83,10 +90,15 @@ class Settings(BaseSettings):
             return parsed or ["https://www.coindesk.com/arc/outboundfeeds/rss/"]
         return value
 
+    @field_validator("allowed_candidate_types", mode="before")
+    @classmethod
+    def parse_allowed_candidate_types(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
     @model_validator(mode="after")
     def validate_settings(self) -> "Settings":
-        if self.execution_mode not in set(ExecutionMode):
-            raise ValueError("EXECUTION_MODE must be one of: alert_only, testnet_auto, live_auto")
         if not 0 < self.risk_pct <= 0.05:
             raise ValueError("RISK_PCT must be > 0 and <= 0.05")
         if self.execution_mode == ExecutionMode.LIVE_AUTO and not self.enable_live_trading:
@@ -101,11 +113,29 @@ class Settings(BaseSettings):
             raise ValueError("CONDITIONAL_ORDER_MODE must be one of: legacy, algo")
         if not 0.0 <= self.ai_min_score_to_allow <= 1.0:
             raise ValueError("AI_MIN_SCORE_TO_ALLOW must be between 0.0 and 1.0")
-        if self.execution_mode == ExecutionMode.LIVE_AUTO and self.ai_evaluation_mode != AIEvaluationMode.OFF:
-            if not self.enable_ai_live_override:
-                raise ValueError(
-                    "LIVE mode with AI enabled requires ENABLE_AI_LIVE_OVERRIDE=true (default false for safety)"
-                )
+        if self.symbol != "BTCUSDT":
+            raise ValueError("Only BTCUSDT is allowed in constrained AI setup universe")
+
+        if self.policy_mode == PolicyMode.AI_TESTNET_AUTO:
+            if not self.binance_testnet:
+                raise ValueError("ai_testnet_auto requires BINANCE_TESTNET=true")
+            if not self.ai_can_execute_testnet:
+                raise ValueError("ai_testnet_auto requires AI_CAN_EXECUTE_TESTNET=true")
+
+        if self.policy_mode == PolicyMode.AI_FILTER_TESTNET:
+            if not self.binance_testnet:
+                raise ValueError("ai_filter_testnet requires BINANCE_TESTNET=true")
+            if not self.ai_evaluation_enabled:
+                raise ValueError("ai_filter_testnet requires AI_EVALUATION_ENABLED=true")
+
+        if self.policy_mode == PolicyMode.BASELINE_VS_AI_AB_TEST and not self.ai_evaluation_enabled:
+            raise ValueError("baseline_vs_ai_ab_test requires AI_EVALUATION_ENABLED=true")
+
+        if self.execution_mode == ExecutionMode.LIVE_AUTO and self.policy_mode in {
+            PolicyMode.AI_TESTNET_AUTO,
+            PolicyMode.AI_FILTER_TESTNET,
+        }:
+            raise ValueError("AI direct/filter trading modes cannot be routed to live_auto")
         return self
 
 
