@@ -11,9 +11,12 @@ from utils.exceptions import ExchangeAdapterError
 
 class BinanceFuturesAdapter:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = True) -> None:
-        self.client = Client(api_key=api_key, api_secret=api_secret)
+        self.client = Client(api_key=api_key, api_secret=api_secret, testnet=testnet)
+        self.testnet = testnet
+        self.base_endpoint = "https://demo-fapi.binance.com/fapi" if testnet else self.client.FUTURES_URL
         if testnet:
-            self.client.FUTURES_URL = "https://testnet.binancefuture.com/fapi"
+            self.client.FUTURES_URL = self.base_endpoint
+        self._symbol_info_cache: dict[str, dict] = {}
 
     def get_futures_balance(self, asset: str = "USDT") -> float:
         try:
@@ -42,10 +45,49 @@ class BinanceFuturesAdapter:
         try:
             return self.client.futures_exchange_info()
         except Exception as exc:
-            raise ExchangeAdapterError(f"Failed to fetch exchange info: {exc}") from exc
+            raise ExchangeAdapterError(
+                f"Failed to fetch exchange info | endpoint={self.base_endpoint}: {exc}"
+            ) from exc
+
+    def get_symbol_info(self, symbol: str) -> dict:
+        if symbol in self._symbol_info_cache:
+            return self._symbol_info_cache[symbol]
+        info = self.get_exchange_info()
+        matched = next((row for row in info.get("symbols", []) if row.get("symbol") == symbol), None)
+        if matched is None:
+            raise ExchangeAdapterError(
+                f"Symbol metadata not found | endpoint={self.base_endpoint} | symbol={symbol}"
+            )
+        self._symbol_info_cache[symbol] = matched
+        return matched
+
+    def get_symbol_filters(self, symbol: str) -> dict:
+        symbol_info = self.get_symbol_info(symbol)
+        filters = {f.get("filterType", "UNKNOWN"): f for f in symbol_info.get("filters", [])}
+        return {
+            "symbol": symbol,
+            "PRICE_FILTER": filters.get("PRICE_FILTER"),
+            "LOT_SIZE": filters.get("LOT_SIZE"),
+            "MARKET_LOT_SIZE": filters.get("MARKET_LOT_SIZE"),
+            "MIN_NOTIONAL": filters.get("MIN_NOTIONAL") or filters.get("NOTIONAL"),
+            "raw": symbol_info,
+        }
+
+    def get_mark_price(self, symbol: str) -> float:
+        try:
+            row = self.client.futures_mark_price(symbol=symbol)
+            return float(row.get("markPrice"))
+        except Exception as exc:
+            raise ExchangeAdapterError(
+                f"Failed to fetch mark price | endpoint={self.base_endpoint} | symbol={symbol}: {exc}"
+            ) from exc
 
     def create_futures_order(self, **kwargs: Any) -> dict:
         try:
             return self.client.futures_create_order(**kwargs)
         except Exception as exc:
-            raise ExchangeAdapterError(f"Failed to create order: {exc}") from exc
+            symbol = kwargs.get("symbol", "UNKNOWN")
+            order_type = kwargs.get("type", "UNKNOWN")
+            raise ExchangeAdapterError(
+                f"Failed to create order | endpoint={self.base_endpoint} | symbol={symbol} | type={order_type}: {exc}"
+            ) from exc

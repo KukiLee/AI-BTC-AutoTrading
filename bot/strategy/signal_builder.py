@@ -27,7 +27,32 @@ class SignalResult:
     news_reason: str = ""
     blockers: list[str] = field(default_factory=list)
     chase_info: dict = field(default_factory=dict)
+    entry_type: str = "none"
+    news_matches: list[dict] = field(default_factory=list)
+    structure_summary: dict = field(default_factory=dict)
     timestamp: str = field(default_factory=to_iso)
+
+
+def derive_retest_entry_long(df_15m: pd.DataFrame, box_high: float, tolerance_pct: float, lookback_bars: int) -> float | None:
+    tolerance = box_high * tolerance_pct
+    recent = df_15m.tail(lookback_bars)
+    for _, row in recent.iloc[::-1].iterrows():
+        low = float(row["low"])
+        close = float(row["close"])
+        if (box_high - tolerance) <= low <= (box_high + tolerance) and close >= box_high:
+            return box_high
+    return None
+
+
+def derive_retest_entry_short(df_15m: pd.DataFrame, box_low: float, tolerance_pct: float, lookback_bars: int) -> float | None:
+    tolerance = box_low * tolerance_pct
+    recent = df_15m.tail(lookback_bars)
+    for _, row in recent.iloc[::-1].iterrows():
+        high = float(row["high"])
+        close = float(row["close"])
+        if (box_low - tolerance) <= high <= (box_low + tolerance) and close <= box_low:
+            return box_low
+    return None
 
 
 def build_trade_setup(
@@ -40,18 +65,19 @@ def build_trade_setup(
     blockers: list[str] = []
     bias = get_bias(df_1h, df_4h)
 
-    news_eval = score_news(headlines)
+    news_eval = score_news(headlines, lookback_minutes=settings.news_lookback_minutes)
     gate = news_gate(news_eval["score"], bias)
 
     if bias == "NEUTRAL":
         return asdict(
             SignalResult(
                 status="NO_TRADE",
-                reason="Higher timeframe bias is neutral",
+                reason="Higher timeframe neutral",
                 bias=bias,
                 news_score=news_eval["score"],
                 news_reason=gate["reason"],
-                blockers=["Bias neutral"],
+                blockers=["Higher timeframe neutral"],
+                news_matches=news_eval["matched_items"],
             )
         )
 
@@ -59,14 +85,23 @@ def build_trade_setup(
     swings = find_swings(df_15m, left=2, right=2)
 
     chase = is_chasing_move(df_15m, threshold_pct=settings.chase_threshold_pct, bars=3)
-    if chase:
-        blockers.append("Momentum chase filter triggered")
+    if chase["triggered"]:
+        blockers.append("Blocked by chase filter")
 
+    entry_type = "retest"
     if bias == "LONG":
-        entry = box["box_high"]
+        entry = derive_retest_entry_long(df_15m, box["box_high"], settings.retest_tolerance_pct, settings.retest_lookback_bars)
+        if entry is None:
+            entry = box["box_high"]
+            entry_type = "breakout_fallback"
+            blockers.append("retest_not_confirmed")
         sl = box["box_low"] * (1 - settings.stop_buffer_pct)
     else:
-        entry = box["box_low"]
+        entry = derive_retest_entry_short(df_15m, box["box_low"], settings.retest_tolerance_pct, settings.retest_lookback_bars)
+        if entry is None:
+            entry = box["box_low"]
+            entry_type = "breakout_fallback"
+            blockers.append("retest_not_confirmed")
         sl = box["box_high"] * (1 + settings.stop_buffer_pct)
 
     risk_per_unit = abs(entry - sl)
@@ -80,51 +115,41 @@ def build_trade_setup(
                 news_score=news_eval["score"],
                 news_reason=gate["reason"],
                 blockers=blockers + ["Invalid stop distance"],
-                chase_info={"triggered": chase},
+                chase_info=chase,
+                entry_type=entry_type,
+                news_matches=news_eval["matched_items"],
             )
         )
 
     tp = calc_rr_targets(bias, entry, sl, rr=2.0)
-    room_ok, room_reason = room_check(
+    room_ok, room_reason, room_blockers = room_check(
         bias, entry, tp, swings["swing_highs"], swings["swing_lows"]
     )
     if not room_ok:
-        blockers.append(room_reason)
+        blockers.append("Blocked by room check")
 
     if not gate["allowed"]:
-        blockers.append(gate["reason"])
+        blockers.append("Blocked by news filter")
 
+    reason = "All checks passed"
     if blockers:
-        return asdict(
-            SignalResult(
-                status="NO_TRADE",
-                reason="Setup blocked by filters",
-                side=bias,
-                bias=bias,
-                entry=entry,
-                sl=sl,
-                tp=tp,
-                risk_per_unit=risk_per_unit,
-                news_score=news_eval["score"],
-                news_reason=gate["reason"],
-                blockers=blockers,
-                chase_info={"triggered": chase},
-            )
-        )
+        reason = "Setup blocked by filters"
 
-    return asdict(
-        SignalResult(
-            status="READY",
-            reason="All checks passed",
-            side=bias,
-            bias=bias,
-            entry=entry,
-            sl=sl,
-            tp=tp,
-            risk_per_unit=risk_per_unit,
-            news_score=news_eval["score"],
-            news_reason=gate["reason"],
-            blockers=[],
-            chase_info={"triggered": chase},
-        )
+    result = SignalResult(
+        status="NO_TRADE" if blockers else "READY",
+        reason=reason,
+        side=bias,
+        bias=bias,
+        entry=entry,
+        sl=sl,
+        tp=tp,
+        risk_per_unit=risk_per_unit,
+        news_score=news_eval["score"],
+        news_reason=gate["reason"],
+        blockers=blockers,
+        chase_info=chase,
+        entry_type=entry_type,
+        news_matches=news_eval["matched_items"],
+        structure_summary={"box": box, "room_reason": room_reason, "room_blockers": room_blockers[:3]},
     )
+    return asdict(result)

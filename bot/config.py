@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,13 +41,29 @@ class Settings(BaseSettings):
     news_lookback_minutes: int = Field(default=120, alias="NEWS_LOOKBACK_MINUTES")
     chase_threshold_pct: float = Field(default=1.8, alias="CHASE_THRESHOLD_PCT")
     box_lookback: int = Field(default=40, alias="BOX_LOOKBACK")
+    retest_tolerance_pct: float = Field(default=0.0015, alias="RETEST_TOLERANCE_PCT")
+    retest_lookback_bars: int = Field(default=8, alias="RETEST_LOOKBACK_BARS")
     loop_interval_seconds: int = Field(default=60, alias="LOOP_INTERVAL_SECONDS")
     alert_on_no_trade: bool = Field(default=False, alias="ALERT_ON_NO_TRADE")
+    alert_dedup_exclude_timestamp: bool = Field(default=True, alias="ALERT_DEDUP_EXCLUDE_TIMESTAMP")
+
+    strict_precision_validation: bool = Field(default=True, alias="STRICT_PRECISION_VALIDATION")
+    conditional_order_mode: str = Field(default="legacy", alias="CONDITIONAL_ORDER_MODE")
 
     stop_buffer_pct: float = Field(default=0.001, alias="STOP_BUFFER_PCT")
     state_file: Path = Field(default=Path("bot_state.json"), alias="STATE_FILE")
 
-    news_sources: list[str] = ["https://www.coindesk.com/arc/outboundfeeds/rss/"]
+    news_sources: list[str] = Field(
+        default=["https://www.coindesk.com/arc/outboundfeeds/rss/"], alias="NEWS_SOURCES"
+    )
+
+    @field_validator("news_sources", mode="before")
+    @classmethod
+    def parse_news_sources(cls, value):
+        if isinstance(value, str):
+            parsed = [item.strip() for item in value.split(",") if item.strip()]
+            return parsed or ["https://www.coindesk.com/arc/outboundfeeds/rss/"]
+        return value
 
     @model_validator(mode="after")
     def validate_settings(self) -> "Settings":
@@ -59,6 +75,12 @@ class Settings(BaseSettings):
             raise ValueError("LIVE mode requested but ENABLE_LIVE_TRADING is false")
         if self.execution_mode == ExecutionMode.TESTNET_AUTO and not self.binance_testnet:
             raise ValueError("testnet_auto mode requires BINANCE_TESTNET=true")
+        if self.retest_tolerance_pct <= 0:
+            raise ValueError("RETEST_TOLERANCE_PCT must be > 0")
+        if self.box_lookback < self.retest_lookback_bars:
+            raise ValueError("BOX_LOOKBACK must be >= RETEST_LOOKBACK_BARS")
+        if self.conditional_order_mode not in {"legacy", "algo"}:
+            raise ValueError("CONDITIONAL_ORDER_MODE must be one of: legacy, algo")
         return self
 
 
