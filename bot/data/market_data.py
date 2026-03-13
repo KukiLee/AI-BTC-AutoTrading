@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 from ..execution.exchange import BinanceFuturesAdapter
-from utils.exceptions import DataValidationError
+from ..utils.exceptions import DataValidationError
 
 KLINE_COLUMNS = [
     "open_time",

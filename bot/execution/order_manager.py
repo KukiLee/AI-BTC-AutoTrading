@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from config import ExecutionMode
-from execution.exchange import BinanceFuturesAdapter
-from strategy.risk_manager import normalize_order_values
-from utils.exceptions import ExchangeAdapterError, RiskValidationError
-from utils.logger import get_logger
+from ..config import ExecutionMode
+from .exchange import BinanceFuturesAdapter
+from ..strategy.risk_manager import normalize_order_values
+from ..utils.exceptions import ExchangeAdapterError, RiskValidationError
+from ..utils.logger import get_logger
 
 
 def _build_entry_payload(symbol: str, side_word: str, qty: float) -> dict:

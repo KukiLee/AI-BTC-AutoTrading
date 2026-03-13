@@ -6,11 +6,11 @@ from dataclasses import asdict, dataclass, field
 
 import pandas as pd
 
-from strategy.market_structure import find_swings, get_recent_box
-from strategy.news_filter import news_gate, score_news
-from strategy.risk_manager import calc_rr_targets
-from strategy.setup_rules import get_bias, is_chasing_move, room_check
-from utils.time_utils import to_iso
+from .market_structure import find_swings, get_recent_box
+from .news_filter import news_gate, score_news
+from .risk_manager import calc_rr_targets
+from .setup_rules import get_bias, is_chasing_move, room_check
+from ..utils.time_utils import to_iso
 
 
 @dataclass
