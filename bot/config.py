@@ -1,0 +1,66 @@
+"""Centralized configuration loading and validation."""
+
+from __future__ import annotations
+
+from enum import Enum
+from pathlib import Path
+
+from dotenv import load_dotenv
+from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ExecutionMode(str, Enum):
+    ALERT_ONLY = "alert_only"
+    TESTNET_AUTO = "testnet_auto"
+    LIVE_AUTO = "live_auto"
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
+
+    binance_api_key: str = Field(default="", alias="BINANCE_API_KEY")
+    binance_api_secret: str = Field(default="", alias="BINANCE_API_SECRET")
+    binance_testnet: bool = Field(default=True, alias="BINANCE_TESTNET")
+
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
+
+    execution_mode: ExecutionMode = Field(default=ExecutionMode.ALERT_ONLY, alias="EXECUTION_MODE")
+    enable_live_trading: bool = Field(default=False, alias="ENABLE_LIVE_TRADING")
+
+    symbol: str = Field(default="BTCUSDT", alias="SYMBOL")
+
+    risk_pct: float = Field(default=0.01, alias="RISK_PCT")
+    leverage: int = Field(default=5, alias="LEVERAGE")
+    max_daily_loss_r: float = Field(default=2.0, alias="MAX_DAILY_LOSS_R")
+    cooldown_minutes: int = Field(default=30, alias="COOLDOWN_MINUTES")
+
+    news_lookback_minutes: int = Field(default=120, alias="NEWS_LOOKBACK_MINUTES")
+    chase_threshold_pct: float = Field(default=1.8, alias="CHASE_THRESHOLD_PCT")
+    box_lookback: int = Field(default=40, alias="BOX_LOOKBACK")
+    loop_interval_seconds: int = Field(default=60, alias="LOOP_INTERVAL_SECONDS")
+    alert_on_no_trade: bool = Field(default=False, alias="ALERT_ON_NO_TRADE")
+
+    stop_buffer_pct: float = Field(default=0.001, alias="STOP_BUFFER_PCT")
+    state_file: Path = Field(default=Path("bot_state.json"), alias="STATE_FILE")
+
+    news_sources: list[str] = ["https://www.coindesk.com/arc/outboundfeeds/rss/"]
+
+    @model_validator(mode="after")
+    def validate_settings(self) -> "Settings":
+        if self.execution_mode not in set(ExecutionMode):
+            raise ValueError("EXECUTION_MODE must be one of: alert_only, testnet_auto, live_auto")
+        if not 0 < self.risk_pct <= 0.05:
+            raise ValueError("RISK_PCT must be > 0 and <= 0.05")
+        if self.execution_mode == ExecutionMode.LIVE_AUTO and not self.enable_live_trading:
+            raise ValueError("LIVE mode requested but ENABLE_LIVE_TRADING is false")
+        if self.execution_mode == ExecutionMode.TESTNET_AUTO and not self.binance_testnet:
+            raise ValueError("testnet_auto mode requires BINANCE_TESTNET=true")
+        return self
+
+
+load_dotenv()
+settings = Settings()
