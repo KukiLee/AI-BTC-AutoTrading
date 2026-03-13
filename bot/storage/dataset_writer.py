@@ -7,7 +7,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from utils.logger import get_logger
+from ..utils.logger import get_logger
 
 
 def _normalize_payload(row) -> dict:

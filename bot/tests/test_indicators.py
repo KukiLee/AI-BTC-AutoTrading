@@ -1,6 +1,6 @@
 import pandas as pd
 
-from indicators.ta import add_indicators
+from bot.indicators.ta import add_indicators
 
 
 def test_indicator_columns_exist_and_length_unchanged():

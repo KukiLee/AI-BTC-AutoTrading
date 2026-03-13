@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from storage.schemas import AIEvaluationResult, SetupFeatureRow
+from ..storage.schemas import AIEvaluationResult, SetupFeatureRow
 
 
 def _confidence_bucket(score: float) -> str:
