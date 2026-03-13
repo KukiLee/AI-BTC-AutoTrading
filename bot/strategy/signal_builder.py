@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass, field
 
 import pandas as pd
@@ -30,7 +31,21 @@ class SignalResult:
     entry_type: str = "none"
     news_matches: list[dict] = field(default_factory=list)
     structure_summary: dict = field(default_factory=dict)
+    timeframe_trigger: str = "15m"
+    timeframe_bias_1h: str | None = None
+    timeframe_bias_4h: str | None = None
+    retest_confirmed: bool = False
+    baseline_decision: str = "NO_TRADE"
+    baseline_reason: str = ""
+    setup_id: str = ""
+    symbol: str = ""
+    ai_evaluation: dict | None = None
     timestamp: str = field(default_factory=to_iso)
+
+
+def _build_setup_id(symbol: str, timestamp: str, bias: str | None, entry: float | None, status: str) -> str:
+    raw = f"{symbol}|{timestamp}|{bias}|{entry}|{status}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def derive_retest_entry_long(df_15m: pd.DataFrame, box_high: float, tolerance_pct: float, lookback_bars: int) -> float | None:
@@ -65,22 +80,29 @@ def build_trade_setup(
     blockers: list[str] = []
     blocker_details: list[str] = []
     bias = get_bias(df_1h, df_4h)
+    timeframe_bias_1h = "LONG" if float(df_1h.iloc[-1]["close"]) > float(df_1h.iloc[-1]["ma20"]) else "SHORT"
+    timeframe_bias_4h = "LONG" if float(df_4h.iloc[-1]["close"]) > float(df_4h.iloc[-1]["ma50"]) else "SHORT"
 
     news_eval = score_news(headlines, lookback_minutes=settings.news_lookback_minutes)
     gate = news_gate(news_eval["score"], bias)
 
     if bias == "NEUTRAL":
-        return asdict(
-            SignalResult(
-                status="NO_TRADE",
-                reason="Higher timeframe neutral",
-                bias=bias,
-                news_score=news_eval["score"],
-                news_reason=gate["reason"],
-                blockers=["bias: Higher timeframe neutral"],
-                news_matches=news_eval["matched_items"],
-            )
+        result = SignalResult(
+            status="NO_TRADE",
+            reason="Higher timeframe neutral",
+            baseline_reason="Higher timeframe neutral",
+            bias=bias,
+            timeframe_bias_1h=timeframe_bias_1h,
+            timeframe_bias_4h=timeframe_bias_4h,
+            news_score=news_eval["score"],
+            news_reason=gate["reason"],
+            blockers=["bias: Higher timeframe neutral"],
+            news_matches=news_eval["matched_items"],
+            baseline_decision="NO_TRADE",
+            symbol=settings.symbol,
         )
+        result.setup_id = _build_setup_id(settings.symbol, result.timestamp, result.bias, result.entry, result.status)
+        return asdict(result)
 
     box = get_recent_box(df_15m, lookback=settings.box_lookback)
     swings = find_swings(df_15m, left=2, right=2)
@@ -94,11 +116,13 @@ def build_trade_setup(
 
     entry_type = "retest"
     used_breakout_fallback = False
+    retest_confirmed = True
     if bias == "LONG":
         entry = derive_retest_entry_long(df_15m, box["box_high"], settings.retest_tolerance_pct, settings.retest_lookback_bars)
         if entry is None:
             entry = box["box_high"]
             entry_type = "breakout_fallback"
+            retest_confirmed = False
             used_breakout_fallback = True
             blockers.append("Retest not confirmed; breakout fallback used")
         sl = box["box_low"] * (1 - settings.stop_buffer_pct)
@@ -107,26 +131,33 @@ def build_trade_setup(
         if entry is None:
             entry = box["box_low"]
             entry_type = "breakout_fallback"
+            retest_confirmed = False
             used_breakout_fallback = True
             blockers.append("Retest not confirmed; breakout fallback used")
         sl = box["box_high"] * (1 + settings.stop_buffer_pct)
 
     risk_per_unit = abs(entry - sl)
     if risk_per_unit <= 0:
-        return asdict(
-            SignalResult(
-                status="ERROR",
-                reason="Invalid structure: stop distance <= 0",
-                side=bias,
-                bias=bias,
-                news_score=news_eval["score"],
-                news_reason=gate["reason"],
-                blockers=blockers + ["structure: Invalid stop distance"],
-                chase_info=chase,
-                entry_type=entry_type,
-                news_matches=news_eval["matched_items"],
-            )
+        result = SignalResult(
+            status="ERROR",
+            reason="Invalid structure: stop distance <= 0",
+            baseline_reason="Invalid structure: stop distance <= 0",
+            side=bias,
+            bias=bias,
+            timeframe_bias_1h=timeframe_bias_1h,
+            timeframe_bias_4h=timeframe_bias_4h,
+            news_score=news_eval["score"],
+            news_reason=gate["reason"],
+            blockers=blockers + ["structure: Invalid stop distance"],
+            chase_info=chase,
+            entry_type=entry_type,
+            retest_confirmed=retest_confirmed,
+            news_matches=news_eval["matched_items"],
+            baseline_decision="NO_TRADE",
+            symbol=settings.symbol,
         )
+        result.setup_id = _build_setup_id(settings.symbol, result.timestamp, result.bias, result.entry, result.status)
+        return asdict(result)
 
     tp = calc_rr_targets(bias, entry, sl, rr=2.0)
     room_ok, room_reason, room_blockers = room_check(bias, entry, tp, swings["swing_highs"], swings["swing_lows"])
@@ -147,6 +178,7 @@ def build_trade_setup(
     result = SignalResult(
         status="NO_TRADE" if blockers else "READY",
         reason=reason,
+        baseline_reason=reason,
         side=bias,
         bias=bias,
         entry=entry,
@@ -158,7 +190,12 @@ def build_trade_setup(
         blockers=blockers + blocker_details,
         chase_info=chase,
         entry_type=entry_type,
+        retest_confirmed=retest_confirmed,
         news_matches=news_eval["matched_items"],
+        timeframe_bias_1h=timeframe_bias_1h,
+        timeframe_bias_4h=timeframe_bias_4h,
+        baseline_decision="NO_TRADE" if blockers else "READY",
+        symbol=settings.symbol,
         structure_summary={
             "box_high": box.get("box_high"),
             "box_low": box.get("box_low"),
@@ -167,6 +204,8 @@ def build_trade_setup(
             "room_reason": room_reason,
             "room_blockers": room_blockers,
             "used_breakout_fallback": used_breakout_fallback,
+            "room_check_passed": room_ok,
         },
     )
+    result.setup_id = _build_setup_id(settings.symbol, result.timestamp, result.bias, result.entry, result.status)
     return asdict(result)
