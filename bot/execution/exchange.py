@@ -6,7 +6,7 @@ from typing import Any
 
 from binance.client import Client
 
-from utils.exceptions import ExchangeAdapterError
+from ..utils.exceptions import ExchangeAdapterError
 
 
 class BinanceFuturesAdapter:

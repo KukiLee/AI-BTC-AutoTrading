@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from execution.exchange import BinanceFuturesAdapter
+from .exchange import BinanceFuturesAdapter
 
 
 @dataclass

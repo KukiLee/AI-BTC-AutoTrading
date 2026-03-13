@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
-from utils.exceptions import RiskValidationError
+from ..utils.exceptions import RiskValidationError
 
 
 @dataclass

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from telegram import Bot
 
-from utils.logger import get_logger
+from ..utils.logger import get_logger
 
 MAX_MESSAGE_LEN = 3900
 
