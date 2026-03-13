@@ -39,6 +39,10 @@ class Settings(BaseSettings):
 
     execution_mode: ExecutionMode = Field(default=ExecutionMode.ALERT_ONLY, alias="EXECUTION_MODE")
     enable_live_trading: bool = Field(default=False, alias="ENABLE_LIVE_TRADING")
+    # IMPORTANT: testnet execution and dry-run are independent controls.
+    # - testnet_auto: real orders on Binance testnet (simulated exchange, no real money).
+    # - enable_dry_run: validation/logging only with zero order creation.
+    enable_dry_run: bool = Field(default=False, alias="ENABLE_DRY_RUN")
 
     symbol: str = Field(default="BTCUSDT", alias="SYMBOL")
 
@@ -105,6 +109,8 @@ class Settings(BaseSettings):
             raise ValueError("LIVE mode requested but ENABLE_LIVE_TRADING is false")
         if self.execution_mode == ExecutionMode.TESTNET_AUTO and not self.binance_testnet:
             raise ValueError("testnet_auto mode requires BINANCE_TESTNET=true")
+        if self.enable_dry_run and self.execution_mode == ExecutionMode.LIVE_AUTO:
+            raise ValueError("ENABLE_DRY_RUN=true cannot be used with live_auto")
         if self.retest_tolerance_pct <= 0:
             raise ValueError("RETEST_TOLERANCE_PCT must be > 0")
         if self.box_lookback < self.retest_lookback_bars:

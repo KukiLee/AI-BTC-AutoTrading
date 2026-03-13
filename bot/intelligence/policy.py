@@ -26,8 +26,8 @@ def resolve_trade_policy(signal: dict, candidates: list[dict], ai_setup_eval, ai
         result["execute"] = baseline_ready and settings.binance_testnet
         result["reason"] = "baseline_testnet_execution"
     elif mode == "ai_shadow":
-        result["execute"] = baseline_ready and settings.binance_testnet and settings.execution_mode.value == "testnet_auto"
-        result["reason"] = "ai_shadow_baseline_authoritative"
+        result["execute"] = False
+        result["reason"] = "ai_shadow_non_executing"
     elif mode == "ai_filter_testnet":
         if not baseline_ready:
             result["execute"] = False

@@ -40,6 +40,13 @@ from .utils.formatting import format_signal_message
 from .utils.logger import configure_logger, get_logger
 
 
+NON_ORDERING_POLICY_MODES = {"baseline_alert_only", "ai_shadow"}
+
+
+def execution_mode_allows_orders(policy_mode: str, execution_mode: ExecutionMode) -> bool:
+    return execution_mode != ExecutionMode.ALERT_ONLY and policy_mode not in NON_ORDERING_POLICY_MODES
+
+
 def signal_hash(signal: dict) -> str:
     encoded = json.dumps(signal, sort_keys=True, default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -116,11 +123,28 @@ async def run() -> None:
                 await notifier.send_telegram(format_signal_message(signal, policy, settings.symbol))
                 state.last_signal_hash = current_hash
 
-            should_execute = policy.get("execute", False) and settings.execution_mode != ExecutionMode.ALERT_ONLY
+            should_execute = policy.get("execute", False) and execution_mode_allows_orders(
+                policy_mode=settings.policy_mode.value,
+                execution_mode=settings.execution_mode,
+            )
+            if settings.policy_mode.value in NON_ORDERING_POLICY_MODES:
+                should_execute = False
+                logger.info("Execution skipped: execution mode non-ordering", extra={"policy_mode": settings.policy_mode.value})
+
             selected = policy.get("selected_candidate") if settings.policy_mode.value == "ai_testnet_auto" else signal
-            if should_execute and selected:
-                if has_open_position(adapter, settings.symbol) or in_cooldown(state, settings.cooldown_minutes) or daily_loss_exceeded(state, settings.max_daily_loss_r):
-                    pass
+            if not policy.get("execute", False):
+                logger.info("Execution skipped: policy blocked", extra={"reason": policy.get("reason", "")})
+            elif not selected:
+                logger.info("Execution skipped: no candidate selected")
+            elif not should_execute:
+                logger.info("Execution skipped: execution mode non-ordering")
+            else:
+                if has_open_position(adapter, settings.symbol):
+                    logger.info("Execution skipped: hard blockers", extra={"blocker": "open_position"})
+                elif in_cooldown(state, settings.cooldown_minutes):
+                    logger.info("Execution skipped: hard blockers", extra={"blocker": "cooldown"})
+                elif daily_loss_exceeded(state, settings.max_daily_loss_r):
+                    logger.info("Execution skipped: hard blockers", extra={"blocker": "daily_loss_limit"})
                 else:
                     symbol_filters = adapter.get_symbol_filters(settings.symbol)
                     mark_price = adapter.get_mark_price(settings.symbol)
@@ -140,7 +164,7 @@ async def run() -> None:
                             enable_live_trading=settings.enable_live_trading,
                             symbol_filters=symbol_filters,
                             conditional_order_mode=settings.conditional_order_mode,
-                            dry_run=settings.execution_mode == ExecutionMode.TESTNET_AUTO,
+                            dry_run=settings.enable_dry_run,
                         )
                         state = register_order_opened(
                             state,
