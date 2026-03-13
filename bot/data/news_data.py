@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 
 import feedparser
 
+MAX_ITEMS_PER_SOURCE = 50
+
 
 def _parse_published(entry: Any) -> datetime | None:
     for key in ("published", "updated"):
@@ -44,25 +46,32 @@ def fetch_recent_headlines(sources: list[str], lookback_minutes: int) -> list[di
         except Exception:
             entries = []
 
+        source = _extract_source_name(src)
+        per_source_count = 0
+
         for entry in entries:
             try:
-                title = entry.get("title", "").strip()
+                title = str(entry.get("title", "")).strip()
                 if not title:
                     continue
                 published_dt = _parse_published(entry)
+                # Intentionally include missing timestamps to avoid dropping source signal.
                 include = published_dt is None or published_dt >= cutoff
                 if not include:
                     continue
-                source = _extract_source_name(src)
                 items.append(
                     {
                         "title": title,
-                        "link": entry.get("link", ""),
+                        "link": str(entry.get("link", "")),
                         "published": published_dt.isoformat() if published_dt else "missing",
                         "published_ts": published_dt.isoformat() if published_dt else "",
                         "source": source,
                     }
                 )
+                per_source_count += 1
+                if per_source_count >= MAX_ITEMS_PER_SOURCE:
+                    break
             except Exception:
+                # Skip malformed entry only.
                 continue
     return items
