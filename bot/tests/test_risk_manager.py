@@ -1,6 +1,6 @@
 import pytest
 
-from strategy.risk_manager import (
+from bot.strategy.risk_manager import (
     apply_exchange_precision,
     calc_position_size,
     calc_rr_targets,
@@ -10,7 +10,7 @@ from strategy.risk_manager import (
     round_to_step,
     validate_position_size,
 )
-from utils.exceptions import RiskValidationError
+from bot.utils.exceptions import RiskValidationError
 
 
 SYMBOL_FILTERS = {

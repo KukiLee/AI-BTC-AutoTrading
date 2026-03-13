@@ -1,4 +1,4 @@
-from intelligence.outcome_labeler import label_trade_outcome_from_path
+from bot.intelligence.outcome_labeler import label_trade_outcome_from_path
 
 
 def test_tp_first_labeling_long():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from storage.schemas import OutcomeLabel
+from ..storage.schemas import OutcomeLabel
 
 
 def label_trade_outcome_from_path(

@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 import pandas as pd
 
-from storage.schemas import SetupFeatureRow
+from ..storage.schemas import SetupFeatureRow
 
 
 def _last(df: pd.DataFrame, column: str):

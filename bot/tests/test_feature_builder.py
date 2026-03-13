@@ -1,7 +1,7 @@
 import pandas as pd
 
-from config import Settings
-from intelligence.feature_builder import build_setup_feature_row
+from bot.config import Settings
+from bot.intelligence.feature_builder import build_setup_feature_row
 
 
 def _settings():

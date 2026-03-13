@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
-from config import Settings
-from intelligence.policy import resolve_trade_policy
+from bot.config import Settings
+from bot.intelligence.policy import resolve_trade_policy
 
 
 @dataclass

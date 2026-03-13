@@ -1,7 +1,7 @@
 import pandas as pd
 
-from strategy.signal_builder import derive_retest_entry_long
-from strategy.setup_rules import get_bias, is_chasing_move, room_check
+from bot.strategy.signal_builder import derive_retest_entry_long
+from bot.strategy.setup_rules import get_bias, is_chasing_move, room_check
 
 
 def test_bias_detection_long_short_neutral():

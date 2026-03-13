@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from strategy.news_filter import news_gate, score_news
+from bot.strategy.news_filter import news_gate, score_news
 
 
 def test_news_scoring_detects_keywords_and_matched_items_shape():
