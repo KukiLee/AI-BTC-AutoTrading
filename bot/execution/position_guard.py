@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
-from datetime import UTC, datetime, timedelta
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from execution.exchange import BinanceFuturesAdapter
@@ -13,10 +13,17 @@ from execution.exchange import BinanceFuturesAdapter
 @dataclass
 class BotState:
     last_signal_hash: str = ""
+    last_ready_hash: str = ""
+    last_error_hash: str = ""
     last_stop_out_time: str = ""
     day_key: str = ""
     realized_r_today: float = 0.0
     last_order_timestamp: str = ""
+    last_trade_side: str = ""
+    last_entry: float = 0.0
+    last_sl: float = 0.0
+    last_tp: float = 0.0
+    last_position_status: str = ""
 
 
 class StateStore:
@@ -24,13 +31,43 @@ class StateStore:
         self.path = path
 
     def load(self) -> BotState:
+        default_day = datetime.now(timezone.utc).date().isoformat()
         if not self.path.exists():
-            return BotState(day_key=datetime.now(UTC).date().isoformat())
-        payload = json.loads(self.path.read_text(encoding="utf-8"))
-        return BotState(**payload)
+            return BotState(day_key=default_day)
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            return BotState(day_key=default_day)
+
+        defaults = asdict(BotState(day_key=default_day))
+        defaults.update(payload if isinstance(payload, dict) else {})
+        return BotState(**defaults)
 
     def save(self, state: BotState) -> None:
         self.path.write_text(json.dumps(asdict(state), indent=2), encoding="utf-8")
+
+
+def roll_day_if_needed(state: BotState) -> BotState:
+    day = datetime.now(timezone.utc).date().isoformat()
+    if state.day_key != day:
+        state.day_key = day
+        state.realized_r_today = 0.0
+    return state
+
+
+def register_stop_out(state: BotState, r_loss: float = 1.0) -> BotState:
+    state = roll_day_if_needed(state)
+    state.realized_r_today -= abs(r_loss)
+    state.last_stop_out_time = datetime.now(timezone.utc).isoformat()
+    state.last_position_status = "STOP_OUT"
+    return state
+
+
+def register_take_profit(state: BotState, r_gain: float = 2.0) -> BotState:
+    state = roll_day_if_needed(state)
+    state.realized_r_today += abs(r_gain)
+    state.last_position_status = "TAKE_PROFIT"
+    return state
 
 
 def has_open_position(adapter: BinanceFuturesAdapter, symbol: str) -> bool:
@@ -42,11 +79,9 @@ def in_cooldown(state: BotState, cooldown_minutes: int) -> bool:
     if not state.last_stop_out_time:
         return False
     stop_time = datetime.fromisoformat(state.last_stop_out_time)
-    return datetime.now(UTC) < (stop_time + timedelta(minutes=cooldown_minutes))
+    return datetime.now(timezone.utc) < (stop_time + timedelta(minutes=cooldown_minutes))
 
 
 def daily_loss_exceeded(state: BotState, max_daily_loss_r: float) -> bool:
-    day = datetime.now(UTC).date().isoformat()
-    if state.day_key != day:
-        return False
+    state = roll_day_if_needed(state)
     return state.realized_r_today <= (-1 * max_daily_loss_r)

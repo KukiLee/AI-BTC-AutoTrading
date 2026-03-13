@@ -18,27 +18,36 @@ def get_bias(df_1h: pd.DataFrame, df_4h: pd.DataFrame) -> str:
     return "NEUTRAL"
 
 
-def is_chasing_move(df_15m: pd.DataFrame, threshold_pct: float, bars: int = 3) -> bool:
+def is_chasing_move(df_15m: pd.DataFrame, threshold_pct: float, bars: int = 3) -> dict:
     chunk = df_15m.tail(bars)
     first = float(chunk.iloc[0]["close"])
     last = float(chunk.iloc[-1]["close"])
     if first <= 0:
-        return True
+        return {"triggered": True, "direction": "UNKNOWN", "move_pct": 0.0}
     pct = ((last - first) / first) * 100
-    return abs(pct) >= threshold_pct
+    direction = "UP" if pct > 0 else "DOWN" if pct < 0 else "FLAT"
+    return {"triggered": abs(pct) >= threshold_pct, "direction": direction, "move_pct": pct}
 
 
-def room_check(side: str, entry: float, tp: float, swing_highs: list[float], swing_lows: list[float]) -> tuple[bool, str]:
+def room_check(
+    side: str,
+    entry: float,
+    tp: float,
+    swing_highs: list[float],
+    swing_lows: list[float],
+) -> tuple[bool, str, list[float]]:
     if side == "LONG":
         blockers = [h for h in swing_highs if entry < h < tp]
-        if blockers:
-            return False, f"Intermediate resistance detected at {blockers[:3]}"
-        return True, "Room clear"
+        meaningful = [x for x in blockers if abs(x - entry) / entry <= 0.02]
+        if meaningful:
+            return False, f"Intermediate resistance detected at {meaningful[:3]}", meaningful[:3]
+        return True, "Room clear", []
 
     if side == "SHORT":
         blockers = [l for l in swing_lows if tp < l < entry]
-        if blockers:
-            return False, f"Intermediate support detected at {blockers[:3]}"
-        return True, "Room clear"
+        meaningful = [x for x in blockers if abs(entry - x) / entry <= 0.02]
+        if meaningful:
+            return False, f"Intermediate support detected at {meaningful[:3]}", meaningful[:3]
+        return True, "Room clear", []
 
-    return False, "Unsupported side"
+    return False, "Unsupported side", []
