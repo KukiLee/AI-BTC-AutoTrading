@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+import logging
+from dataclasses import MISSING, asdict, dataclass, fields
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .exchange import BinanceFuturesAdapter
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -39,17 +43,43 @@ class StateStore:
 
     def load(self) -> BotState:
         default_day = datetime.now(timezone.utc).date().isoformat()
+        defaults = self._bot_state_defaults(default_day=default_day)
         if not self.path.exists():
-            return BotState(day_key=default_day)
+            return BotState(**defaults)
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
             # Corrupted state file should not crash startup.
-            return BotState(day_key=default_day)
+            logger.warning("State load failed due to invalid JSON; resetting state: %s", exc)
+            return BotState(**defaults)
 
-        defaults = asdict(BotState(day_key=default_day))
-        defaults.update(payload if isinstance(payload, dict) else {})
-        return BotState(**defaults)
+        if not isinstance(payload, dict):
+            logger.warning("State file does not contain a JSON object; resetting state")
+            return BotState(**defaults)
+
+        defaults.update(self._filter_state_keys(payload))
+        try:
+            return BotState(**defaults)
+        except Exception as exc:
+            logger.warning("State payload incompatible with BotState; resetting state: %s", exc)
+            return BotState(**self._bot_state_defaults(default_day=default_day))
+
+    @staticmethod
+    def _bot_state_defaults(*, default_day: str) -> dict[str, object]:
+        defaults: dict[str, object] = {}
+        for field in fields(BotState):
+            if field.name == "day_key":
+                defaults[field.name] = default_day
+            elif field.default is not MISSING:
+                defaults[field.name] = field.default
+            elif field.default_factory is not MISSING:
+                defaults[field.name] = field.default_factory()
+        return defaults
+
+    @staticmethod
+    def _filter_state_keys(data: dict[str, object]) -> dict[str, object]:
+        allowed_keys = {field.name for field in fields(BotState)}
+        return {key: value for key, value in data.items() if key in allowed_keys}
 
     def save(self, state: BotState) -> None:
         self.path.write_text(json.dumps(asdict(state), indent=2), encoding="utf-8")
