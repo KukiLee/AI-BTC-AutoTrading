@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 from dataclasses import asdict
 
 from .config import ExecutionMode, settings
@@ -45,11 +43,6 @@ NON_ORDERING_POLICY_MODES = {"baseline_alert_only", "ai_shadow"}
 
 def execution_mode_allows_orders(policy_mode: str, execution_mode: ExecutionMode) -> bool:
     return execution_mode != ExecutionMode.ALERT_ONLY and policy_mode not in NON_ORDERING_POLICY_MODES
-
-
-def signal_hash(signal: dict) -> str:
-    encoded = json.dumps(signal, sort_keys=True, default=str)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 async def run() -> None:
@@ -118,11 +111,6 @@ async def run() -> None:
             if settings.dataset_logging_enabled:
                 log_policy_decision(decision_record, settings.dataset_dir)
 
-            current_hash = signal_hash({"signal": signal, "policy": policy})
-            if current_hash != state.last_signal_hash:
-                await notifier.send_telegram(format_signal_message(signal, policy, settings.symbol))
-                state.last_signal_hash = current_hash
-
             should_execute = policy.get("execute", False) and execution_mode_allows_orders(
                 policy_mode=settings.policy_mode.value,
                 execution_mode=settings.execution_mode,
@@ -165,6 +153,10 @@ async def run() -> None:
                             symbol_filters=symbol_filters,
                             conditional_order_mode=settings.conditional_order_mode,
                             dry_run=settings.enable_dry_run,
+                        )
+                        await notifier.send_telegram(
+                            f"{format_signal_message(signal, policy, settings.symbol)}\n"
+                            f"\n[ORDER] Entry/SL/TP order placement succeeded"
                         )
                         state = register_order_opened(
                             state,
